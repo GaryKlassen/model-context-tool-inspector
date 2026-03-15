@@ -6,8 +6,10 @@
 import { GoogleGenAI } from './js-genai.js';
 import { initGeminiLive, MODEL } from './gemini-live.js';
 
-if (!localStorage.model || localStorage.model.includes('gemini-2.0')) {
-  localStorage.model = MODEL;
+const TEXT_MODEL = 'gemini-3.1-flash-lite-preview';
+
+if (!localStorage.model || localStorage.model.includes('gemini-2.5') || localStorage.model.includes('gemini-2.0')) {
+  localStorage.model = TEXT_MODEL;
 }
 
 const statusDiv = document.getElementById('status');
@@ -27,8 +29,10 @@ const resetBtn = document.getElementById('resetBtn');
 const apiKeyBtn = document.getElementById('apiKeyBtn');
 const promptResults = document.getElementById('promptResults');
 const micBtn = document.getElementById('micBtn');
+const enableScriptTool = document.getElementById('enableScriptTool');
 
 if (!micBtn) console.error('Could not find micBtn in DOM');
+if (!enableScriptTool) console.error('Could not find enableScriptTool in DOM');
 
 // Inject content script first.
 (async () => {
@@ -179,18 +183,25 @@ async function initGenAI() {
   }
   if (env?.apiKey) localStorage.apiKey ??= env.apiKey;
   
-  if (!localStorage.model || localStorage.model.includes('gemini-2.0')) {
-    localStorage.model = MODEL;
+  if (!localStorage.model || localStorage.model.includes('gemini-2.5')) {
+    localStorage.model = TEXT_MODEL;
   }
   
   if (localStorage.apiKey) {
     genAI = new GoogleGenAI({ apiKey: localStorage.apiKey, httpOptions: { apiVersion: 'v1alpha' } });
   }
   
+  enableScriptTool.checked = localStorage.enableScriptTool === 'true';
   promptBtn.disabled = !localStorage.apiKey;
   resetBtn.disabled = !localStorage.apiKey;
 }
 initGenAI();
+
+enableScriptTool.onchange = () => {
+  localStorage.enableScriptTool = enableScriptTool.checked;
+  chat = undefined;
+  suggestUserPrompt();
+};
 
 async function suggestUserPrompt() {
   if (!currentTools || currentTools.length == 0 || !genAI || userPromptText.value !== lastSuggestedUserPrompt)
@@ -343,6 +354,10 @@ executeBtn.onclick = async () => {
 };
 
 async function executeTool(tabId, name, inputArgs) {
+  if (name === 'write_script') {
+    const { task } = JSON.parse(inputArgs);
+    return await handleWriteScript(task);
+  }
   try {
     const result = await chrome.tabs.sendMessage(tabId, {
       action: 'EXECUTE_TOOL',
@@ -361,6 +376,106 @@ async function executeTool(tabId, name, inputArgs) {
   });
 }
 
+async function handleWriteScript(task) {
+  const thinkingModelName = 'gemini-3-flash-preview';
+  const toolsDescription = (currentTools || []).map(t => `- ${t.name}: ${t.description}. Input schema: ${t.inputSchema}`).join('\n');
+  
+  const prompt = `
+You are an expert JavaScript developer tasked with writing a robust automation script for the current page.
+Goal: "${task}"
+
+AVAILABLE TOOLS:
+You have access to a global asynchronous function \`executeTool(name, args)\` which:
+- Takes the tool name and an OBJECT of arguments.
+- Automatically handles JSON stringification of inputs.
+- Automatically handles JSON parsing of outputs (returns a plain JS object).
+
+Tools List:
+${toolsDescription}
+
+GUIDELINES:
+1.  **Algorithmic Approach**: Write an intelligent algorithm or loop to achieve the goal. Do NOT just execute steps one-by-one if the task requires state-based logic (e.g., "scan all items", "retry until ready", "find the target").
+2.  **Safety**: Include safety limits on loops (e.g., a maximum of 50 iterations) to prevent the script from hanging the browser tab.
+3.  **Async/Await**: The script runs as an asynchronous function body. Use \`await executeTool(...)\`.
+4.  **Explicit Return**: Always end with an explicit \`return\` statement providing a final result string, object, or summary of actions taken.
+
+CODE FORMAT:
+Output ONLY the JavaScript code for the function body. No preamble, explanation, or IIFE wrapper. Just the code to be executed. Wrap in \`\`\`javascript block.
+
+Example:
+\`\`\`javascript
+let found = false;
+for (let i = 0; i < 20; i++) {
+  const state = await executeTool('getState', {});
+  if (state.isFinished) {
+    found = true;
+    break;
+  }
+  await executeTool('processStep', { step: i });
+}
+return found ? "Success" : "Failed after 20 attempts";
+\`\`\`
+`;
+
+  logPrompt(`🚀 Starting Script Tool for task: "${task}"`);
+  logPrompt(`🧠 Calling ${thinkingModelName} in Thinking Mode (this may take a minute)...`);
+
+  try {
+    const response = await genAI.models.generateContent({
+      model: thinkingModelName,
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      generationConfig: {
+        thinkingConfig: {
+          includeThoughts: true,
+          thinkingLevel: "high"
+        }
+      }
+    });
+
+    let script = response.text;
+    
+    // Extract script from markdown
+    const match = script.match(/```javascript\n([\s\S]*?)\n```/) || script.match(/```\n([\s\S]*?)\n```/);
+    if (match) {
+      script = match[1];
+    }
+    
+    logPrompt(`📝 ${thinkingModelName} generated a script (${script.length} chars).`);
+    logPrompt(`⚙️ Executing script in page context...`);
+    
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    
+    const executionResults = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: async (scriptSource) => {
+        const executeTool = async (name, args) => {
+          const res = await navigator.modelContextTesting.executeTool(name, JSON.stringify(args));
+          try {
+            return typeof res === 'string' ? JSON.parse(res) : res;
+          } catch (e) {
+            return res;
+          }
+        };
+        // Use AsyncFunction to support top-level await in the provided scriptSource
+        const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
+        const fn = new AsyncFunction('executeTool', scriptSource);
+        return await fn(executeTool);
+      },
+      args: [script],
+      world: 'MAIN',
+    });
+
+    const finalResult = executionResults[0]?.result;
+    logPrompt(`✅ Script execution complete.`);
+    logPrompt(`🏁 Result: ${JSON.stringify(finalResult, null, 2)}`);
+    return finalResult;
+
+  } catch (error) {
+    logPrompt(`❌ Script Tool Error: ${error.message}`);
+    throw error;
+  }
+}
+
 toolNames.onchange = updateDefaultValueForInputArgs;
 
 function updateDefaultValueForInputArgs() {
@@ -375,6 +490,7 @@ initGeminiLive({
   apiKeyBtn,
   getGenAI: () => genAI,
   getTools: () => currentTools,
+  isScriptToolEnabled: () => enableScriptTool.checked,
   executeTool,
   logPrompt,
   getFormattedDate
@@ -433,6 +549,31 @@ function getConfig() {
         : { type: 'object', properties: {} },
     };
   });
+
+  if (enableScriptTool.checked) {
+    functionDeclarations.push({
+      name: 'write_script',
+      description:
+        'Write a robust JavaScript automation script to solve complex tasks on the current page. ' +
+        'This is the BEST tool for multi-step goals, state-based logic, or when you need to ' +
+        '\'solve\', \'automate\', \'scan\', \'loop\', or \'retry until\' a condition is met. ' +
+        'Use it to sequence multiple tool calls into an intelligent algorithm instead of ' +
+        'calling tools one-by-one.',
+      parametersJsonSchema: {
+        type: 'object',
+        properties: {
+          task: {
+            type: 'string',
+            description:
+              'A detailed description of the automation task to perform, including the ' +
+              'end goal and any specific conditions to check.',
+          },
+        },
+        required: ['task'],
+      },
+    });
+  }
+
   return { systemInstruction, tools: [{ functionDeclarations }] };
 }
 
