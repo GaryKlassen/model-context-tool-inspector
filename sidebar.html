@@ -35,10 +35,18 @@
       <div class="section-content">
 
       <div class="form-group">
-        <label class="checkbox-container">
-          <input type="checkbox" id="enableScriptTool">
-          Enable Script Tool (Gemini 3 Thinking)
-        </label>
+        <div style="display: flex; gap: 6px; align-items: center; margin-bottom: 10px;">
+          <label class="checkbox-container">
+            <input type="checkbox" id="enableScriptTool">
+            Enable Script Tool
+          </label>
+          <div style="margin-left: auto; display: flex; gap: 4px;">
+            <button id="browseFanSpecsBtn" class="secondary" style="font-size: 10px; padding: 4px 6px;">Browse Community</button>
+            <button id="addFanSpecGitHubBtn" class="secondary" style="font-size: 10px; padding: 4px 6px;">From GitHub</button>
+            <button id="loadFanSpecBtn" class="secondary" style="font-size: 10px; padding: 4px 6px;">Add Fan Spec</button>
+          </div>
+          <input type="file" id="fanSpecInput" accept=".json,.js" multiple style="display: none;">
+        </div>
       </div>
 
       <div class="form-group">
@@ -82,6 +90,21 @@
 
       <pre id="toolResults"></pre>
       </div>
+
+      <h2 id="communitySpecsHeader" class="collapsible-header collapsed">Community Specs (Discovery)</h2>
+      <div class="section-content is-hidden">
+        <div id="communitySpecsList" class="registry-list">
+          <div style="font-size: 11px; color: #6b7280; text-align: center; padding: 20px;">Click "Browse Community" to discover specs.</div>
+        </div>
+      </div>
+
+      <h2 class="collapsible-header">Added Fan Specs</h2>
+      <div class="section-content">
+        <div id="fanSpecRegistryList" class="registry-list">
+          <!-- Populated by sidebar.js -->
+        </div>
+      </div>
+
     </div>
     <script type="module" src="sidebar.js"></script>
   </body>
