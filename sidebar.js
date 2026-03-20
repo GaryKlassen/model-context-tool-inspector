@@ -281,6 +281,8 @@ async function handleToolMessage({ message, tools, url }, sender) {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!sender.tab || sender.tab.id !== tab?.id) return;
 
+  console.debug('[WebMCP] handleToolMessage triggered', { message, toolsCount: tools?.length, url });
+
   if (message !== undefined) {
     statusDiv.textContent = message || '';
     statusDiv.hidden = !message;
@@ -292,24 +294,33 @@ async function handleToolMessage({ message, tools, url }, sender) {
   const matchingFanTools = [];
   const tabUrl = url || tab?.url || '';
 
+  console.debug('[WebMCP] Starting Fan Spec matching', { 
+    tabUrl, 
+    specsCount: Object.keys(fanSpecs).length,
+    specsAvailable: Object.keys(fanSpecs) 
+  });
+
   if (tabUrl) {
     for (const specName in fanSpecs) {
       const spec = fanSpecs[specName];
+      console.debug(`[WebMCP] Checking spec "${specName}" against URL`, spec.matches);
+      
       const isMatch = spec.matches.some((pattern) => {
-        // Convert glob pattern to Regex more robustly
         const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&');
         const regex = new RegExp('^' + escaped.replace(/\\\*/g, '.*').replace(/\\\?/g, '.') + '$');
-        return regex.test(tabUrl);
+        const match = regex.test(tabUrl);
+        console.debug(`  - Pattern "${pattern}" matches? ${match}`);
+        return match;
       });
 
       if (isMatch) {
+        console.debug(`[WebMCP] ✅ MATCH FOUND for spec "${specName}"`);
         logPrompt(`ℹ️ Adding Fan Spec: "${spec.name}" tools to list for this page.`);
         spec.tools.forEach((tool) => {
           matchingFanTools.push({
             ...tool,
             isFanTool: true,
             specName: spec.name,
-            // Convert inputSchema to string to match WebMCP tool structure
             inputSchema: typeof tool.inputSchema === 'string' ? tool.inputSchema : JSON.stringify(tool.inputSchema),
           });
         });
@@ -318,6 +329,7 @@ async function handleToolMessage({ message, tools, url }, sender) {
   }
 
   const allTools = [...(tools || []), ...matchingFanTools];
+  console.debug(`[WebMCP] Tool discovery final count: ${allTools.length} (${tools?.length || 0} native, ${matchingFanTools.length} fan)`);
   // --- End Fan Spec Logic ---
 
   tbody.innerHTML = '';
