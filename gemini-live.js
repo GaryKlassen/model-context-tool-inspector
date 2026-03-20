@@ -219,6 +219,7 @@ async function startLive({ micBtn, getGenAI, getTools, isScriptToolEnabled, exec
           stopLive(micBtn);
         },
         onmessage: (message) => {
+          console.debug('[WebMCP] Live session received message:', message);
           // 1. CRITICAL: Handle Tool Calls FIRST
           if (message.toolCall?.functionCalls) {
             const fcs = message.toolCall.functionCalls;
@@ -230,13 +231,19 @@ async function startLive({ micBtn, getGenAI, getTools, isScriptToolEnabled, exec
                   const result = await executeTool(tab.id, fc.name, JSON.stringify(fc.args));
                   logPrompt(`Tool "${fc.name}" result: ${result}`);
                   // Note: In the Live API, 'id' is used to match the response to the call.
-                  responses.push({ id: fc.id, name: fc.name, response: { result } });
+                  // The result must be a plain object or primitive.
+                  responses.push({ 
+                    id: fc.id, 
+                    name: fc.name, 
+                    response: result && typeof result === 'object' ? result : { result } 
+                  });
                 } catch (e) {
                   logPrompt(`⚠️ Error executing tool "${fc.name}": ${e.message}`);
                   responses.push({ id: fc.id, name: fc.name, response: { error: e.message } });
                 }
               }
               if (responses.length > 0 && liveSession) {
+                console.debug('[WebMCP] Sending tool responses to Live session:', responses);
                 liveSession.sendToolResponse({ functionResponses: responses });
               }
             })();
