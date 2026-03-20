@@ -50,18 +50,50 @@ chrome.runtime.onMessage.addListener((message, _, reply) => {
     }
     if (action == 'RUN_FAN_ADAPTER') {
       const { adapterSource, name, inputArgs } = message;
-      (async () => {
-        console.debug(`[WebMCP] Running Fan Adapter for "${name}" in Isolated World`);
-        try {
-          const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
-          const fn = new AsyncFunction('name', 'args', adapterSource + '\nreturn await executeTool(name, args);');
-          const result = await fn(name, JSON.parse(inputArgs));
-          reply(result === undefined ? null : result);
-        } catch (e) {
-          console.error(`[WebMCP] Fan Adapter Error:`, e);
-          reply({ error: e.message });
+      
+      // We must avoid 'new Function' in the content script context due to Extension CSP.
+      // Instead, we inject a script tag into the page (MAIN world) using a bridge.
+      const eventId = `webmcp-fan-${Math.random().toString(36).substr(2, 9)}`;
+      
+      const script = document.createElement('script');
+      script.textContent = `
+        (async () => {
+          try {
+            // Define adapter in a local scope
+            const adapter = (() => {
+              ${adapterSource}
+              return { executeTool: typeof executeTool !== 'undefined' ? executeTool : null };
+            })();
+
+            if (typeof adapter.executeTool !== 'function') {
+              throw new Error('Fan Spec adapter logic did not define an executeTool function.');
+            }
+
+            const result = await adapter.executeTool("${name}", ${inputArgs});
+            window.dispatchEvent(new CustomEvent("${eventId}", { 
+              detail: { result: result === undefined ? null : result } 
+            }));
+          } catch (e) {
+            window.dispatchEvent(new CustomEvent("${eventId}", { 
+              detail: { error: e.message } 
+            }));
+          }
+        })();
+      `;
+
+      const onResult = (e) => {
+        window.removeEventListener(eventId, onResult);
+        script.remove();
+        if (e.detail.error) {
+          reply({ error: e.detail.error });
+        } else {
+          reply(e.detail.result);
         }
-      })();
+      };
+
+      window.addEventListener(eventId, onResult);
+      (document.head || document.documentElement).appendChild(script);
+      
       return true; // Keep channel open for async reply
     }
     if (action == 'GET_CROSS_DOCUMENT_SCRIPT_TOOL_RESULT') {
