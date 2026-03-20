@@ -650,16 +650,34 @@ async function handleFanToolExecution(tabId, toolDef, inputArgs) {
   const results = await chrome.scripting.executeScript({
     target: { tabId },
     func: async (adapterSource, name, argsJson) => {
-      // Create a temporary scope for the adapter
-      const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
-      const fn = new AsyncFunction('name', 'args', adapterSource + '\nreturn await executeTool(name, args);');
-      return await fn(name, JSON.parse(argsJson));
+      console.debug(`[WebMCP] Fan Tool "${name}" execution started.`);
+      try {
+        // Create a temporary scope for the adapter
+        const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
+        const fn = new AsyncFunction('name', 'args', adapterSource + '\nreturn await executeTool(name, args);');
+        const result = await fn(name, JSON.parse(argsJson));
+        console.debug(`[WebMCP] Fan Tool "${name}" result:`, result);
+        return result === undefined ? { __undefined: true } : result;
+      } catch (e) {
+        console.error(`[WebMCP] Fan Tool "${name}" error:`, e);
+        return { __error: e.message, __stack: e.stack };
+      }
     },
     args: [spec.adapterCode, toolName, inputArgs],
-    world: 'ISOLATED', // Fan Tools run in the isolated world
+    world: 'MAIN', // Use MAIN world for better page context access
   });
 
-  return results[0]?.result;
+  if (!results || results.length === 0) {
+    throw new Error('Fan Tool execution returned no results (script injection failed).');
+  }
+
+  const result = results[0].result;
+  if (result && typeof result === 'object') {
+    if (result.__error) throw new Error(`Fan Tool Adapter Error: ${result.__error}`);
+    if (result.__undefined) return 'null (undefined)';
+  }
+
+  return result;
 }
 
 async function handleWriteScript(task) {
