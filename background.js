@@ -8,17 +8,16 @@ chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
 
 // Inject content script in all tabs first.
 chrome.runtime.onInstalled.addListener(async () => {
-  // Set up CSP modification rules
+  // Set up CSP removal rules
   const rules = [{
     id: 1,
     priority: 1,
     action: {
       type: 'modifyHeaders',
-      responseHeaders: [{
-        header: 'content-security-policy',
-        operation: 'append',
-        value: " ; script-src 'unsafe-inline' 'unsafe-eval' ; script-src-elem 'unsafe-inline' 'unsafe-eval' ;"
-      }]
+      responseHeaders: [
+        { header: 'content-security-policy', operation: 'remove' },
+        { header: 'x-content-security-policy', operation: 'remove' }
+      ]
     },
     condition: {
       urlFilter: '*',

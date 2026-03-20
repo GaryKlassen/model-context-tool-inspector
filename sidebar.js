@@ -650,18 +650,46 @@ async function handleFanToolExecution(tabId, toolDef, inputArgs) {
   const results = await chrome.scripting.executeScript({
     target: { tabId },
     func: async (adapterSource, name, argsJson) => {
-      console.debug(`[WebMCP] Fan Tool "${name}" execution started.`);
-      try {
-        // Create a temporary scope for the adapter
-        const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
-        const fn = new AsyncFunction('name', 'args', adapterSource + '\nreturn await executeTool(name, args);');
-        const result = await fn(name, JSON.parse(argsJson));
-        console.debug(`[WebMCP] Fan Tool "${name}" result:`, result);
-        return result === undefined ? null : result;
-      } catch (e) {
-        console.error(`[WebMCP] Fan Tool "${name}" error:`, e);
-        return { error: e.message };
-      }
+      // We must avoid eval/new Function in this function because it's still subject to Extension CSP.
+      // But once we inject a <script> tag, the code INSIDE that tag follows the PAGE CSP.
+      // And our background script just removed the Page CSP headers!
+      
+      const bridgeId = `webmcp-fan-${Math.random().toString(36).substr(2, 9)}`;
+      const script = document.createElement('script');
+      
+      // We inline the entire logic into a string that becomes the script content.
+      // This string contains its own scoped try/catch and event dispatcher.
+      script.textContent = `
+        (async () => {
+          try {
+            // Define the adapter logic
+            ${adapterSource}
+            
+            // Call the executeTool function defined in the adapter source
+            const result = await executeTool("${name}", ${argsJson});
+            
+            window.dispatchEvent(new CustomEvent("${bridgeId}", { 
+              detail: { result: result === undefined ? null : result } 
+            }));
+          } catch (e) {
+            window.dispatchEvent(new CustomEvent("${bridgeId}", { 
+              detail: { error: e.message } 
+            }));
+          }
+        })();
+      `;
+
+      const resultPromise = new Promise((resolve) => {
+        const handler = (e) => {
+          window.removeEventListener(bridgeId, handler);
+          resolve(e.detail);
+        };
+        window.addEventListener(bridgeId, handler);
+      });
+
+      (document.head || document.documentElement).appendChild(script);
+      script.remove();
+      return await resultPromise;
     },
     args: [spec.adapterCode, toolName, inputArgs],
     world: 'MAIN',
