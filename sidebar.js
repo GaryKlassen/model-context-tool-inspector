@@ -5,9 +5,12 @@
 
 import { GoogleGenAI } from './js-genai.js';
 import { initGeminiLive, MODEL } from './gemini-live.js';
+import { executeFanSequence } from './fan-engine.js';
 
-if (!localStorage.model || localStorage.model.includes('gemini-2.0')) {
-  localStorage.model = MODEL;
+const TEXT_MODEL = 'gemini-3.1-flash-lite-preview';
+
+if (!localStorage.model || localStorage.model.includes('gemini-2.5') || localStorage.model.includes('gemini-2.0')) {
+  localStorage.model = TEXT_MODEL;
 }
 
 const statusDiv = document.getElementById('status');
@@ -27,8 +30,10 @@ const resetBtn = document.getElementById('resetBtn');
 const apiKeyBtn = document.getElementById('apiKeyBtn');
 const promptResults = document.getElementById('promptResults');
 const micBtn = document.getElementById('micBtn');
-
-if (!micBtn) console.error('Could not find micBtn in DOM');
+const enableScriptTool = document.getElementById('enableScriptTool');
+const loadFanSpecBtn = document.getElementById('loadFanSpecBtn');
+const fanSpecInput = document.getElementById('fanSpecInput');
+const fanSpecRegistryList = document.getElementById('fanSpecRegistryList');
 
 // Inject content script first.
 (async () => {
@@ -55,81 +60,239 @@ if (!micBtn) console.error('Could not find micBtn in DOM');
   }
 })();
 
-let currentTools;
+let currentTools = [];
 let userPromptPendingId = 0;
 let lastSuggestedUserPrompt = '';
 
+let toolsUpdateResolver;
+
+loadFanSpecBtn.onclick = () => fanSpecInput.click();
+
+fanSpecInput.onchange = async (event) => {
+  const files = Array.from(event.target.files);
+  if (files.length === 0) return;
+
+  try {
+    for (const file of files) {
+      if (file.name.endsWith('.json')) {
+        const text = await file.text();
+        const spec = JSON.parse(text);
+
+        if (!spec.name || !spec.matches || !spec.tools) {
+          throw new Error('Invalid Fan Spec: Missing metadata (name, matches, tools).');
+        }
+
+        spec.sourceUrl = file.name === 'webmcp.json' ? 'Local File' : file.name;
+
+        const stored = await chrome.storage.local.get('fanSpecs');
+        const specs = stored.fanSpecs || {};
+        specs[spec.name] = spec;
+        await chrome.storage.local.set({ fanSpecs: specs });
+
+        logPrompt(`✅ Added Fan Spec: "${spec.name}" (${spec.tools.length} tools)`);
+      }
+    }
+    
+    renderFanSpecList();
+
+    // Refresh tools for the current page
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    await chrome.tabs.sendMessage(tab.id, { action: 'LIST_TOOLS' });
+
+  } catch (error) {
+    logPrompt(`❌ Error adding Fan Spec: ${error.message}`);
+  } finally {
+    fanSpecInput.value = '';
+  }
+};
+
+async function renderFanSpecList() {
+  const stored = await chrome.storage.local.get('fanSpecs');
+  const fanSpecs = stored.fanSpecs || {};
+  
+  fanSpecRegistryList.innerHTML = '';
+  
+  const specNames = Object.keys(fanSpecs);
+  if (specNames.length === 0) {
+    fanSpecRegistryList.innerHTML = '<div style="font-size: 11px; color: #6b7280; text-align: center; padding: 20px;">No Fan Specs added yet.</div>';
+    return;
+  }
+
+  specNames.forEach(name => {
+    const spec = fanSpecs[name];
+    const item = document.createElement('div');
+    item.className = 'registry-item';
+    
+    const isGitHub = spec.sourceUrl?.includes('github.com');
+    const repoUrl = isGitHub ? spec.sourceUrl.split('/tree/')[0] : null;
+
+    item.innerHTML = `
+      <div class="registry-item-header">
+        <span class="registry-item-name">${spec.name}</span>
+        <span class="registry-item-meta">${spec.tools.length} tools</span>
+      </div>
+      <div class="registry-item-meta">Matches: ${spec.matches.join(', ')}</div>
+      <div class="registry-item-meta">Source: ${spec.sourceUrl}</div>
+      <div class="registry-item-actions">
+        ${isGitHub ? `<a href="${repoUrl}" target="_blank">⭐ GitHub Repo</a>` : ''}
+        ${isGitHub ? `<a href="${repoUrl}/issues" target="_blank">🐛 Report Bug</a>` : ''}
+        <span class="remove-btn" data-name="${spec.name}">❌ Remove</span>
+      </div>
+    `;
+    
+    item.querySelector('.remove-btn').onclick = async () => {
+      if (confirm(`Remove Fan Spec "${spec.name}"?`)) {
+        const current = await chrome.storage.local.get('fanSpecs');
+        const specs = current.fanSpecs || {};
+        delete specs[spec.name];
+        await chrome.storage.local.set({ fanSpecs: specs });
+        renderFanSpecList();
+        
+        // Refresh tools
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (tab) {
+          await chrome.tabs.sendMessage(tab.id, { action: 'LIST_TOOLS' }).catch(() => {});
+        }
+      }
+    };
+
+    fanSpecRegistryList.appendChild(item);
+  });
+}
+
+// Initial render
+renderFanSpecList();
+
 // Listen for the results coming back from content.js
 chrome.runtime.onMessage.addListener((msg, sender) => {
-  if (msg.tools || msg.message) {
-    handleToolMessage(msg, sender);
-  }
+  handleToolMessage(msg, sender);
 });
 
 async function handleToolMessage({ message, tools, url }, sender) {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!sender.tab || sender.tab.id !== tab?.id) return;
 
+  console.debug('[WebMCP] handleToolMessage triggered', { message, toolsCount: tools?.length, url });
+
   if (message !== undefined) {
     statusDiv.textContent = message || '';
     statusDiv.hidden = !message;
   }
 
-  if (tools) {
-    tbody.innerHTML = '';
-    thead.innerHTML = '';
-    toolNames.innerHTML = '';
+  // --- Fan Spec Logic: Virtual Mounting ---
+  const stored = await chrome.storage.local.get('fanSpecs');
+  const fanSpecs = stored.fanSpecs || {};
+  const matchingFanTools = [];
+  const tabUrl = url || tab?.url || '';
 
-    const haveNewTools = JSON.stringify(currentTools) !== JSON.stringify(tools);
-    currentTools = tools;
+  console.debug('[WebMCP] Starting Fan Spec matching', { 
+    tabUrl, 
+    specsCount: Object.keys(fanSpecs).length,
+    specsAvailable: Object.keys(fanSpecs) 
+  });
 
-    if (!tools || tools.length === 0) {
-      const row = document.createElement('tr');
-      row.innerHTML = `<td colspan="100%"><i>No tools registered yet in ${url || tab?.url || 'this tab'}</i></td>`;
-      tbody.appendChild(row);
-      inputArgsText.value = '';
-      inputArgsText.disabled = true;
-      toolNames.disabled = true;
-      executeBtn.disabled = true;
-      copyToClipboard.hidden = true;
-      return;
-    }
+  if (tabUrl) {
+    for (const specName in fanSpecs) {
+      const spec = fanSpecs[specName];
+      console.debug(`[WebMCP] Checking spec "${specName}" against URL`, spec.matches);
+      const isMatch = spec.matches.some((pattern) => {
+        // More robust glob-to-regex: 
+        // 1. Escape all regex-sensitive characters EXCEPT * and ?
+        let regexStr = pattern.replace(/[-/\\^$*+?.()|[\]{}]/g, (m) => {
+          if (m === '*' || m === '?') return m; // Keep glob chars for now
+          return '\\' + m;
+        });
 
-    inputArgsText.disabled = false;
-    toolNames.disabled = false;
-    executeBtn.disabled = false;
-    copyToClipboard.hidden = false;
+        // 2. Convert glob wildcards to regex equivalents
+        regexStr = '^' + regexStr.replace(/\*/g, '.*').replace(/\?/g, '.') + '$';
 
-    const keys = Object.keys(tools[0]);
-    keys.forEach((key) => {
-      const th = document.createElement('th');
-      th.textContent = key;
-      thead.appendChild(th);
-    });
-
-    tools.forEach((item) => {
-      const row = document.createElement('tr');
-      keys.forEach((key) => {
-        const td = document.createElement('td');
-        try {
-          td.innerHTML = `<pre>${JSON.stringify(JSON.parse(item[key]), '', '  ')}</pre>`;
-        } catch (error) {
-          td.textContent = item[key];
-        }
-        row.appendChild(td);
+        const regex = new RegExp(regexStr);
+        const match = regex.test(tabUrl);
+        console.debug(`  - Pattern "${pattern}" -> Regex "${regexStr}" matches? ${match}`);
+        return match;
       });
-      tbody.appendChild(row);
-
-      const option = document.createElement('option');
-      option.textContent = `"${item.name}"`;
-      option.value = item.name;
-      option.dataset.inputSchema = item.inputSchema;
-      toolNames.appendChild(option);
-    });
-    updateDefaultValueForInputArgs();
-
-    if (haveNewTools) suggestUserPrompt();
+      if (isMatch) {
+        console.debug(`[WebMCP] ✅ MATCH FOUND for spec "${specName}"`);
+        logPrompt(`ℹ️ Adding Fan Spec: "${spec.name}" tools to list for this page.`);
+        spec.tools.forEach((tool) => {
+          matchingFanTools.push({
+            ...tool,
+            isFanTool: true,
+            specName: spec.name,
+            inputSchema: typeof tool.inputSchema === 'string' ? tool.inputSchema : JSON.stringify(tool.inputSchema),
+          });
+        });
+      }
+    }
   }
+
+  const allTools = [...(tools || []), ...matchingFanTools];
+  console.debug(`[WebMCP] Tool discovery final count: ${allTools.length} (${tools?.length || 0} native, ${matchingFanTools.length} fan)`);
+  // --- End Fan Spec Logic ---
+
+  tbody.innerHTML = '';
+  thead.innerHTML = '';
+  toolNames.innerHTML = '';
+
+  const haveNewTools = JSON.stringify(currentTools) !== JSON.stringify(allTools);
+  currentTools = allTools;
+
+  if (toolsUpdateResolver) {
+    toolsUpdateResolver();
+    toolsUpdateResolver = null;
+  }
+
+  if (allTools.length === 0) {
+    const row = document.createElement('tr');
+    row.innerHTML = `<td colspan="100%"><i>No tools registered yet in ${tabUrl || 'this tab'}</i></td>`;
+    tbody.appendChild(row);
+    inputArgsText.value = '';
+    inputArgsText.disabled = true;
+    toolNames.disabled = true;
+    executeBtn.disabled = true;
+    copyToClipboard.hidden = true;
+    return;
+  }
+
+  inputArgsText.disabled = false;
+  toolNames.disabled = false;
+  executeBtn.disabled = false;
+  copyToClipboard.hidden = false;
+
+  // Use keys from the first tool that actually has them
+  const representativeTool = allTools[0];
+  const keys = Object.keys(representativeTool).filter(k => k !== 'isFanTool' && k !== 'specName');
+  
+  keys.forEach((key) => {
+    const th = document.createElement('th');
+    th.textContent = key;
+    thead.appendChild(th);
+  });
+
+  allTools.forEach((item) => {
+    const row = document.createElement('tr');
+    if (item.isFanTool) row.classList.add('fan-tool-row'); // Use CSS for tinting
+    
+    keys.forEach((key) => {
+      const td = document.createElement('td');
+      try {
+        td.innerHTML = `<pre>${JSON.stringify(JSON.parse(item[key]), '', '  ')}</pre>`;
+      } catch (error) {
+        td.textContent = item[key];
+      }
+      row.appendChild(td);
+    });
+    tbody.appendChild(row);
+
+    const option = document.createElement('option');
+    option.textContent = (item.isFanTool ? '⭐ ' : '') + `"${item.name}"`;
+    option.value = item.name;
+    option.dataset.inputSchema = item.inputSchema;
+    toolNames.appendChild(option);
+  });
+  updateDefaultValueForInputArgs();
+
+  if (haveNewTools) suggestUserPrompt();
 }
 
 tbody.ondblclick = () => {
@@ -167,36 +330,42 @@ copyAsJSON.onclick = async () => {
 
 let genAI, chat;
 
-const envModulePromise = import('./.env.json', { with: { type: 'json' } }).catch(() => ({ default: {} }));
+const envModulePromise = import('./.env.json', { with: { type: 'json' } });
 
 async function initGenAI() {
   let env;
   try {
-    const result = await envModulePromise;
-    env = result.default || {};
-  } catch {
-    env = {};
-  }
+    // Try load .env.json if present.
+    env = (await envModulePromise).default;
+  } catch {}
   if (env?.apiKey) localStorage.apiKey ??= env.apiKey;
   
-  if (!localStorage.model || localStorage.model.includes('gemini-2.0')) {
-    localStorage.model = MODEL;
+  if (!localStorage.model || localStorage.model.includes('gemini-2.5') || localStorage.model.includes('gemini-2.0') || localStorage.model === MODEL) {
+    localStorage.model = TEXT_MODEL;
   }
-  
+
   if (localStorage.apiKey) {
-    genAI = new GoogleGenAI({ apiKey: localStorage.apiKey, httpOptions: { apiVersion: 'v1alpha' } });
+    // Default to v1beta for chat stability. Gemini Live will explicitly use v1alpha when connecting.
+    genAI = new GoogleGenAI({ apiKey: localStorage.apiKey, httpOptions: { apiVersion: 'v1beta' } });
   }
   
+  enableScriptTool.checked = localStorage.enableScriptTool === 'true';
   promptBtn.disabled = !localStorage.apiKey;
   resetBtn.disabled = !localStorage.apiKey;
 }
 initGenAI();
 
+enableScriptTool.onchange = () => {
+  localStorage.enableScriptTool = enableScriptTool.checked;
+  chat = undefined;
+  suggestUserPrompt();
+};
+
 async function suggestUserPrompt() {
-  if (!currentTools || currentTools.length == 0 || !genAI || userPromptText.value !== lastSuggestedUserPrompt)
+  if (currentTools.length == 0 || !genAI || userPromptText.value !== lastSuggestedUserPrompt)
     return;
   const userPromptId = ++userPromptPendingId;
-  
+
   const response = await genAI.models.generateContent({
     model: localStorage.model,
     contents: [
@@ -214,19 +383,15 @@ async function suggestUserPrompt() {
       JSON.stringify(currentTools),
     ],
   });
-  
+
   if (userPromptId !== userPromptPendingId || userPromptText.value !== lastSuggestedUserPrompt)
     return;
   lastSuggestedUserPrompt = response.text;
-  userPromptText.value = '';
-  for (const chunk of response.text) {
-    await new Promise((r) => requestAnimationFrame(r));
-    userPromptText.value += chunk;
-  }
+  userPromptText.value = lastSuggestedUserPrompt;
 }
 
 userPromptText.onkeydown = (event) => {
-  if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+  if (event.key === 'Enter' && !event.shiftKey) {
     event.preventDefault();
     promptBtn.click();
   }
@@ -245,15 +410,14 @@ let trace = [];
 
 async function promptAI() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  chat ??= genAI.chats.create({ 
-    model: localStorage.model,
-    toolConfig: { functionCallingConfig: { mode: 'ANY' } }
-  });
+
+  chat ??= genAI.chats.create({ model: localStorage.model });
+
   const message = userPromptText.value;
   userPromptText.value = '';
   lastSuggestedUserPrompt = '';
   logPrompt(`User prompt: "${message}"`);
-  
+
   const sendMessageParams = { message, config: getConfig() };
   trace.push({ userPrompt: sendMessageParams });
   let currentResult = await chat.sendMessage(sendMessageParams);
@@ -262,7 +426,7 @@ async function promptAI() {
   while (!finalResponseGiven) {
     const response = currentResult;
     trace.push({ response });
-    
+
     const functionCalls = response.functionCalls || [];
 
     if (functionCalls.length === 0) {
@@ -274,33 +438,34 @@ async function promptAI() {
       finalResponseGiven = true;
     } else {
       // Prioritize tool calls over text logging
-      const toolResponses = [];
-      const promises = functionCalls.map(async ({ name, args }) => {
-        const inputArgs = JSON.stringify(args);
-        const toolPromise = executeTool(tab.id, name, inputArgs);
-        logPrompt(`AI calling tool "${name}" with ${inputArgs}`);
-        try {
-          const result = await toolPromise;
-          logPrompt(`Tool "${name}" result: ${result}`);
-          return { functionResponse: { name, response: { result } } };
-        } catch (e) {
-          logPrompt(`⚠️ Error executing tool "${name}": ${e.message}`);
-          return { functionResponse: { name, response: { error: e.message } } };
-        }
-      });
-
+      // Execute tool calls sequentially to handle potential dependencies.
       if (response.text) {
         logPrompt(`AI result: ${response.text.trim()}`);
       }
 
-      const results = await Promise.all(promises);
-      toolResponses.push(...results);
-      
-      // FIXME: New WebMCP tools may not be discovered if there's a navigation.
-      // We check if the tab is loading, but the artificial 500ms timeout is not robust enough.
+      const toolResponses = [];
+      for (const { name, args } of functionCalls) {
+        const inputArgs = JSON.stringify(args);
+        logPrompt(`AI calling tool "${name}" with ${inputArgs}`);
+        try {
+          const result = await executeTool(tab.id, name, inputArgs);
+          logPrompt(`Tool "${name}" result: ${result}`);
+          toolResponses.push({ functionResponse: { name, response: { result } } });
+        } catch (e) {
+          logPrompt(`⚠️ Error executing tool "${name}": ${e.message}`);
+          toolResponses.push({ functionResponse: { name, response: { error: e.message } } });
+        }
+      }
+
+      // If a navigation occurred, wait for the page to load and tools to be registered.
       const [currentTab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (currentTab.status === 'loading') {
-        await new Promise((r) => setTimeout(r, 500));
+        await Promise.race([
+          new Promise(resolve => { toolsUpdateResolver = resolve; }),
+          waitForPageLoad(currentTab.id),
+          new Promise(resolve => setTimeout(resolve, 2000))
+        ]);
+        toolsUpdateResolver = null;
       }
 
       const sendMessageParams = { message: toolResponses, config: getConfig() };
@@ -343,22 +508,141 @@ executeBtn.onclick = async () => {
 };
 
 async function executeTool(tabId, name, inputArgs) {
+  if (name === 'write_script') {
+    const { task } = JSON.parse(inputArgs);
+    return await handleWriteScript(task);
+  }
+
+  // Check if this is a Fan Tool
+  const toolDef = currentTools?.find(t => t.name === name);
+  if (toolDef?.isFanTool) {
+    return await handleFanToolExecution(tabId, toolDef, inputArgs);
+  }
+
   try {
     const result = await chrome.tabs.sendMessage(tabId, {
       action: 'EXECUTE_TOOL',
       name,
       inputArgs,
     });
-    if (result !== null) return result;
+    return result;
   } catch (error) {
-    if (!error.message.includes('message channel is closed')) throw error;
+    return Promise.reject(error.message);
   }
-  // A navigation was triggered. The result will be on the next document.
-  // TODO: Handle case where a new tab is opened.
-  await waitForPageLoad(tabId);
-  return await chrome.tabs.sendMessage(tabId, {
-    action: 'GET_CROSS_DOCUMENT_SCRIPT_TOOL_RESULT',
-  });
+}
+
+async function handleFanToolExecution(tabId, toolDef, inputArgs) {
+  const { specName, name: toolName } = toolDef;
+  const stored = await chrome.storage.local.get('fanSpecs');
+  const spec = stored.fanSpecs?.[specName];
+  const toolSpec = spec?.tools.find(t => t.name === toolName);
+
+  if (!toolSpec || !toolSpec.sequence) {
+    throw new Error(`Execution sequence not found for tool "${toolName}" in Spec "${specName}"`);
+  }
+
+  logPrompt(`⚙️ Executing Fan Tool "${toolName}" via sequence engine...`);
+  return await executeFanSequence(tabId, toolSpec.sequence, JSON.parse(inputArgs));
+}
+
+async function handleWriteScript(task) {
+  const thinkingModelName = 'gemini-3-flash-preview';
+  const toolsDescription = (currentTools || []).map(t => `- ${t.name}: ${t.description}. Input schema: ${t.inputSchema}`).join('\n');
+  
+  const prompt = `
+You are an expert JavaScript developer tasked with writing a robust automation script for the current page.
+Goal: "${task}"
+
+AVAILABLE TOOLS:
+You have access to a global asynchronous function \`executeTool(name, args)\` which:
+- Takes the tool name and an OBJECT of arguments.
+- Automatically handles JSON stringification of inputs.
+- Automatically handles JSON parsing of outputs (returns a plain JS object).
+
+Tools List:
+${toolsDescription}
+
+GUIDELINES:
+1.  **Algorithmic Approach**: Write an intelligent algorithm or loop to achieve the goal. Do NOT just execute steps one-by-one if the task requires state-based logic (e.g., "scan all items", "retry until ready", "find the target").
+2.  **Safety**: Include safety limits on loops (e.g., a maximum of 50 iterations) to prevent the script from hanging the browser tab.
+3.  **Async/Await**: The script runs as an asynchronous function body. Use \`await executeTool(...)\`.
+4.  **Explicit Return**: Always end with an explicit \`return\` statement providing a final result string, object, or summary of actions taken.
+
+CODE FORMAT:
+Output ONLY the JavaScript code for the function body. No preamble, explanation, or IIFE wrapper. Just the code to be executed. Wrap in \`\`\`javascript block.
+
+Example:
+\`\`\`javascript
+let found = false;
+for (let i = 0; i < 20; i++) {
+  const state = await executeTool('getState', {});
+  if (state.isFinished) {
+    found = true;
+    break;
+  }
+  await executeTool('processStep', { step: i });
+}
+return found ? "Success" : "Failed after 20 attempts";
+\`\`\`
+`;
+
+  logPrompt(`🚀 Starting Script Tool for task: "${task}"`);
+  logPrompt(`🧠 Calling ${thinkingModelName} in Thinking Mode (this may take a minute)...`);
+
+  try {
+    const response = await genAI.models.generateContent({
+      model: thinkingModelName,
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      generationConfig: {
+        thinkingConfig: {
+          includeThoughts: true,
+          thinkingLevel: "high"
+        }
+      }
+    });
+
+    let script = response.text;
+    
+    // Extract script from markdown
+    const match = script.match(/```javascript\n([\s\S]*?)\n```/) || script.match(/```\n([\s\S]*?)\n```/);
+    if (match) {
+      script = match[1];
+    }
+    
+    logPrompt(`📝 ${thinkingModelName} generated a script (${script.length} chars).`);
+    logPrompt(`⚙️ Executing script in page context...`);
+    
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    
+    const executionResults = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: async (scriptSource) => {
+        const executeTool = async (name, args) => {
+          const res = await navigator.modelContextTesting.executeTool(name, JSON.stringify(args));
+          try {
+            return typeof res === 'string' ? JSON.parse(res) : res;
+          } catch (e) {
+            return res;
+          }
+        };
+        // Use AsyncFunction to support top-level await in the provided scriptSource
+        const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
+        const fn = new AsyncFunction('executeTool', scriptSource);
+        return await fn(executeTool);
+      },
+      args: [script],
+      world: 'MAIN',
+    });
+
+    const finalResult = executionResults[0]?.result;
+    logPrompt(`✅ Script execution complete.`);
+    logPrompt(`🏁 Result: ${JSON.stringify(finalResult, null, 2)}`);
+    return finalResult;
+
+  } catch (error) {
+    logPrompt(`❌ Script Tool Error: ${error.message}`);
+    throw error;
+  }
 }
 
 toolNames.onchange = updateDefaultValueForInputArgs;
@@ -375,9 +659,10 @@ initGeminiLive({
   apiKeyBtn,
   getGenAI: () => genAI,
   getTools: () => currentTools,
+  isScriptToolEnabled: () => enableScriptTool.checked,
   executeTool,
   logPrompt,
-  getFormattedDate
+  getFormattedDate,
 });
 
 // Utils
@@ -388,7 +673,7 @@ let logPending = false;
 function logPrompt(text) {
   // Defer logging and batch updates to avoid blocking main thread logic.
   logBuffer.push(text);
-  
+
   if (!logPending) {
     logPending = true;
     setTimeout(() => {
@@ -424,7 +709,7 @@ function getConfig() {
     'CRITICAL RULE: Whenever the user provides a relative date (e.g., "next Monday", "tomorrow", "in 3 days"),  you must calculate the exact calendar date based on today\'s date.',
   ];
 
-  const functionDeclarations = (currentTools || []).map((tool) => {
+  const functionDeclarations = currentTools.map((tool) => {
     return {
       name: tool.name,
       description: tool.description,
@@ -433,6 +718,31 @@ function getConfig() {
         : { type: 'object', properties: {} },
     };
   });
+
+  if (enableScriptTool.checked) {
+    functionDeclarations.push({
+      name: 'write_script',
+      description:
+        'Write a robust JavaScript automation script to solve complex tasks on the current page. ' +
+        'This is the BEST tool for multi-step goals, state-based logic, or when you need to ' +
+        '\'solve\', \'automate\', \'scan\', \'loop\', or \'retry until\' a condition is met. ' +
+        'Use it to sequence multiple tool calls into an intelligent algorithm instead of ' +
+        'calling tools one-by-one.',
+      parametersJsonSchema: {
+        type: 'object',
+        properties: {
+          task: {
+            type: 'string',
+            description:
+              'A detailed description of the automation task to perform, including the ' +
+              'end goal and any specific conditions to check.',
+          },
+        },
+        required: ['task'],
+      },
+    });
+  }
+
   return { systemInstruction, tools: [{ functionDeclarations }] };
 }
 
@@ -445,83 +755,45 @@ function generateTemplateFromSchema(schema) {
     return schema.const;
   }
 
-  if (Array.isArray(schema.oneOf) && schema.oneOf.length > 0) {
-    return generateTemplateFromSchema(schema.oneOf[0]);
-  }
-
   if (schema.hasOwnProperty('default')) {
     return schema.default;
   }
 
-  if (Array.isArray(schema.examples) && schema.examples.length > 0) {
-    return schema.examples[0];
+  if (schema.enum && schema.enum.length > 0) {
+    return schema.enum[0];
   }
 
   switch (schema.type) {
     case 'object':
       const obj = {};
       if (schema.properties) {
-        Object.keys(schema.properties).forEach((key) => {
+        for (const key in schema.properties) {
           obj[key] = generateTemplateFromSchema(schema.properties[key]);
-        });
+        }
       }
       return obj;
 
     case 'array':
+      const arr = [];
       if (schema.items) {
-        return [generateTemplateFromSchema(schema.items)];
+        arr.push(generateTemplateFromSchema(schema.items));
       }
-      return [];
+      return arr;
 
     case 'string':
-      if (schema.enum && schema.enum.length > 0) {
-        return schema.enum[0];
+      if (schema.format === 'date-time') {
+        return new Date().toISOString();
       }
       if (schema.format === 'date') {
-        return new Date().toISOString().substring(0, 10);
+        return new Date().toISOString().split('T')[0];
       }
-      // yyyy-MM-ddThh:mm:ss.SSS
-      if (
-        schema.format ===
-        '^[0-9]{4}-(0[1-9]|1[0-2])-[0-9]{2}T([01][0-9]|2[0-3]):[0-5][0-9](:[0-5][0-9](\\.[0-9]{1,3})?)?$'
-      ) {
-        return new Date().toISOString().substring(0, 23);
+      if (schema.format === 'time') {
+        return new Date().toISOString().split('T')[1].split('.')[0];
       }
-      // yyyy-MM-ddThh:mm:ss
-      if (
-        schema.format ===
-        '^[0-9]{4}-(0[1-9]|1[0-2])-[0-9]{2}T([01][0-9]|2[0-3]):[0-5][0-9](:[0-5][0-9])?$'
-      ) {
-        return new Date().toISOString().substring(0, 19);
+      if (schema.format === 'uri') {
+        return 'https://example.com';
       }
-      // yyyy-MM-ddThh:mm
-      if (schema.format === '^[0-9]{4}-(0[1-9]|1[0-2])-[0-9]{2}T([01][0-9]|2[0-3]):[0-5][0-9]$') {
-        return new Date().toISOString().substring(0, 16);
-      }
-      // yyyy-MM
-      if (schema.format === '^[0-9]{4}-(0[1-9]|1[0-2])$') {
-        return new Date().toISOString().substring(0, 7);
-      }
-      // yyyy-Www
-      if (schema.format === '^[0-9]{4}-W(0[1-9]|[1-4][0-9]|5[0-3])$') {
-        return `${new Date().toISOString().substring(0, 4)}-W01`;
-      }
-      // HH:mm:ss.SSS
-      if (schema.format === '^([01][0-9]|2[0-3]):[0-5][0-9](:[0-5][0-9](\\.[0-9]{1,3})?)?$') {
-        return new Date().toISOString().substring(11, 23);
-      }
-      // HH:mm:ss
-      if (schema.format === '^([01][0-9]|2[0-3]):[0-5][0-9](:[0-5][0-9])?$') {
-        return new Date().toISOString().substring(11, 19);
-      }
-      // HH:mm
-      if (schema.format === '^([01][0-9]|2[0-3]):[0-5][0-9]$') {
-        return new Date().toISOString().substring(11, 16);
-      }
-      if (schema.format === '^#[0-9a-zA-Z]{6}$') {
-        return '#ff00ff';
-      }
-      if (schema.format === 'tel') {
+      if (schema.format === 'phone') {
         return '123-456-7890';
       }
       if (schema.format === 'email') {
