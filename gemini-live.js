@@ -242,7 +242,7 @@ async function startLive({ micBtn, getGenAI, getTools, isScriptToolEnabled, exec
                   responses.push({ 
                     id: fc.id, 
                     name: fc.name, 
-                    response: result && typeof result === 'object' ? result : { result } 
+                    response: { result: result === undefined ? null : result } 
                   });
                 } catch (e) {
                   logPrompt(`⚠️ Error executing tool "${fc.name}": ${e.message}`);
