@@ -102,6 +102,22 @@ const primitives = {
     return true;
   },
 
+  /** Reads multiple selectors into an object. */
+  readSelectors: ({ mapping = {} }) => {
+    const results = {};
+    for (const [key, selector] of Object.entries(mapping)) {
+      const el = document.querySelector(selector);
+      results[key] = el ? (el.innerText || el.textContent || '').trim() : null;
+    }
+    return results;
+  },
+
+  /** Reads all matching elements into an array. */
+  readAll: ({ selector }) => {
+    const elements = document.querySelectorAll(selector);
+    return Array.from(elements).map(el => (el.innerText || el.textContent || '').trim());
+  },
+
   /** Simple navigation */
   navigate: ({ url }) => {
     window.location.href = url;

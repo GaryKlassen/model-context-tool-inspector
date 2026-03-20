@@ -259,7 +259,9 @@ async function renderFanSpecList() {
         
         // Refresh tools
         const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-        await chrome.tabs.sendMessage(tab.id, { action: 'LIST_TOOLS' });
+        if (tab) {
+          await chrome.tabs.sendMessage(tab.id, { action: 'LIST_TOOLS' }).catch(() => {});
+        }
       }
     };
 
@@ -296,8 +298,9 @@ async function handleToolMessage({ message, tools, url }, sender) {
     for (const specName in fanSpecs) {
       const spec = fanSpecs[specName];
       const isMatch = spec.matches.some((pattern) => {
-        // Convert glob pattern to Regex
-        const regex = new RegExp('^' + pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*') + '$');
+        // Convert glob pattern to Regex more robustly
+        const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+        const regex = new RegExp('^' + escaped.replace(/\\\*/g, '.*').replace(/\\\?/g, '.') + '$');
         return regex.test(tabUrl);
       });
 
