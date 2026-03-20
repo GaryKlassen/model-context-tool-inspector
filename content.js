@@ -5,7 +5,9 @@
 
 console.debug('[WebMCP] Content script injected');
 
-chrome.runtime.onMessage.addListener(({ action, name, inputArgs }, _, reply) => {
+chrome.runtime.onMessage.addListener((message, _, reply) => {
+  const { action, name, inputArgs } = message;
+  
   try {
     if (!navigator.modelContextTesting) {
       throw new Error('Error: You must run Chrome with the "WebMCP for testing" flag enabled.');
@@ -45,6 +47,22 @@ chrome.runtime.onMessage.addListener(({ action, name, inputArgs }, _, reply) => 
         })
         .catch(({ message }) => reply(JSON.stringify(message)));
       return true;
+    }
+    if (action == 'RUN_FAN_ADAPTER') {
+      const { adapterSource, name, inputArgs } = message;
+      (async () => {
+        console.debug(`[WebMCP] Running Fan Adapter for "${name}" in Isolated World`);
+        try {
+          const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
+          const fn = new AsyncFunction('name', 'args', adapterSource + '\nreturn await executeTool(name, args);');
+          const result = await fn(name, JSON.parse(inputArgs));
+          reply(result === undefined ? null : result);
+        } catch (e) {
+          console.error(`[WebMCP] Fan Adapter Error:`, e);
+          reply({ error: e.message });
+        }
+      })();
+      return true; // Keep channel open for async reply
     }
     if (action == 'GET_CROSS_DOCUMENT_SCRIPT_TOOL_RESULT') {
       console.debug('[WebMCP] Get cross document script tool result');

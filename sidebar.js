@@ -645,96 +645,25 @@ async function handleFanToolExecution(tabId, toolDef, inputArgs) {
     throw new Error(`Adapter code not found for Fan Spec: "${specName}"`);
   }
 
-  logPrompt(`⚙️ Executing Fan Tool "${toolName}" via adapter...`);
-  console.debug(`[WebMCP] Starting Fan Tool execution for "${toolName}"`);
+  logPrompt(`⚙️ Executing Fan Tool "${toolName}" via adapter (Isolated World)...`);
 
-  // We must avoid 'new Function' or 'eval' due to Extension CSP.
-  // Instead, we inject a script that defines the adapter and then calls the tool.
-  const results = await chrome.scripting.executeScript({
-    target: { tabId },
-    func: async (adapterSource, name, argsJson) => {
-      console.debug(`[WebMCP] Script injection function running in tab context for "${name}"`);
-      
-      try {
-        const script = document.createElement('script');
-        const blob = new Blob([`
-          (async () => {
-            console.debug('[WebMCP] Blob script started execution in page.');
-            try {
-              // Create a unique scope for the adapter logic
-              const adapter = (() => {
-                ${adapterSource}
-                return { executeTool: typeof executeTool !== 'undefined' ? executeTool : null };
-              })();
+  try {
+    const result = await chrome.tabs.sendMessage(tabId, {
+      action: 'RUN_FAN_ADAPTER',
+      adapterSource: spec.adapterCode,
+      name: toolName,
+      inputArgs
+    });
 
-              if (typeof adapter.executeTool !== 'function') {
-                throw new Error('Fan Spec adapter logic did not define an executeTool function.');
-              }
+    if (result && typeof result === 'object' && result.error) {
+      throw new Error(result.error);
+    }
 
-              console.debug('[WebMCP] Calling adapter.executeTool("${name}")...');
-              const result = await adapter.executeTool("${name}", ${argsJson});
-              console.debug('[WebMCP] result:', result);
-              
-              window.dispatchEvent(new CustomEvent('webmcp-fan-result', { 
-                detail: { result: result === undefined ? { __undefined: true } : result } 
-              }));
-            } catch (e) {
-              console.error('[WebMCP] Error inside blob script:', e);
-              window.dispatchEvent(new CustomEvent('webmcp-fan-result', { 
-                detail: { error: e.message, stack: e.stack } 
-              }));
-            }
-          })();
-        `], { type: 'text/javascript' });
-        
-        const url = URL.createObjectURL(blob);
-        console.debug('[WebMCP] Created Blob URL:', url);
-        
-        const resultPromise = new Promise((resolve, reject) => {
-          const timeout = setTimeout(() => {
-            window.removeEventListener('webmcp-fan-result', handler);
-            reject(new Error('Fan Tool execution timed out (10s)'));
-          }, 10000);
-
-          const handler = (e) => {
-            console.debug('[WebMCP] Received result event:', e.detail);
-            clearTimeout(timeout);
-            window.removeEventListener('webmcp-fan-result', handler);
-            URL.revokeObjectURL(url);
-            resolve(e.detail);
-          };
-          window.addEventListener('webmcp-fan-result', handler);
-        });
-
-        script.src = url;
-        (document.head || document.documentElement).appendChild(script);
-        console.debug('[WebMCP] Script tag appended to DOM');
-        script.remove();
-
-        return await resultPromise;
-      } catch (injectionError) {
-        console.error('[WebMCP] Error during script injection setup:', injectionError);
-        return { error: injectionError.message };
-      }
-    },
-    args: [spec.adapterCode, toolName, inputArgs],
-    world: 'MAIN',
-  });
-
-  console.debug(`[WebMCP] executeScript returned results:`, results);
-
-  if (!results || results.length === 0) {
-    throw new Error('Fan Tool execution returned no results (script injection failed).');
+    return result;
+  } catch (error) {
+    console.error(`[WebMCP] Fan Tool "${toolName}" execution failed:`, error);
+    throw new Error(`Fan Tool Adapter Error: ${error.message}`);
   }
-
-  const result = results[0].result;
-  if (result && typeof result === 'object') {
-    if (result.error) throw new Error(`Fan Tool Adapter Error: ${result.error}`);
-    if (result.__undefined) return 'null (undefined)';
-    return result.result;
-  }
-
-  return result;
 }
 
 async function handleWriteScript(task) {
