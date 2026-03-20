@@ -5,6 +5,7 @@
 
 // Allows users to open the side panel by clicking the action icon.
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
+
 // Inject content script in all tabs first.
 chrome.runtime.onInstalled.addListener(async () => {
   // Set up CSP modification rules
@@ -25,14 +26,16 @@ chrome.runtime.onInstalled.addListener(async () => {
     }
   }];
 
-  await chrome.declarativeNetRequest.updateSessionRules({
-    removeRuleIds: [1],
-    addRules: rules
-  });
+  try {
+    await chrome.declarativeNetRequest.updateSessionRules({
+      removeRuleIds: [1],
+      addRules: rules
+    });
+  } catch (err) {
+    console.error('Failed to set CSP rules:', err);
+  }
 
   const tabs = await chrome.tabs.query({});
-...
-
   tabs.forEach(({ id: tabId }) => {
     chrome.scripting
       .executeScript({
