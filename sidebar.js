@@ -656,16 +656,25 @@ async function handleFanToolExecution(tabId, toolDef, inputArgs) {
       console.debug(`[WebMCP] Script injection function running in tab context for "${name}"`);
       
       try {
-        // Wrapper to inject the adapter code safely without eval()
         const script = document.createElement('script');
         const blob = new Blob([`
           (async () => {
             console.debug('[WebMCP] Blob script started execution in page.');
             try {
-              ${adapterSource}
-              console.debug('[WebMCP] Adapter source loaded, calling executeTool("${name}")...');
-              const result = await executeTool("${name}", ${argsJson});
-              console.debug('[WebMCP] executeTool returned:', result);
+              // Create a unique scope for the adapter logic
+              const adapter = (() => {
+                ${adapterSource}
+                return { executeTool: typeof executeTool !== 'undefined' ? executeTool : null };
+              })();
+
+              if (typeof adapter.executeTool !== 'function') {
+                throw new Error('Fan Spec adapter logic did not define an executeTool function.');
+              }
+
+              console.debug('[WebMCP] Calling adapter.executeTool("${name}")...');
+              const result = await adapter.executeTool("${name}", ${argsJson});
+              console.debug('[WebMCP] result:', result);
+              
               window.dispatchEvent(new CustomEvent('webmcp-fan-result', { 
                 detail: { result: result === undefined ? { __undefined: true } : result } 
               }));
