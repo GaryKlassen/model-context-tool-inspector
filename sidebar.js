@@ -646,52 +646,73 @@ async function handleFanToolExecution(tabId, toolDef, inputArgs) {
   }
 
   logPrompt(`⚙️ Executing Fan Tool "${toolName}" via adapter...`);
+  console.debug(`[WebMCP] Starting Fan Tool execution for "${toolName}"`);
 
   // We must avoid 'new Function' or 'eval' due to Extension CSP.
   // Instead, we inject a script that defines the adapter and then calls the tool.
   const results = await chrome.scripting.executeScript({
     target: { tabId },
     func: async (adapterSource, name, argsJson) => {
-      console.debug(`[WebMCP] Fan Tool "${name}" execution started.`);
+      console.debug(`[WebMCP] Script injection function running in tab context for "${name}"`);
       
-      // Wrapper to inject the adapter code safely without eval()
-      const script = document.createElement('script');
-      const blob = new Blob([`
-        (async () => {
-          try {
-            ${adapterSource}
-            const result = await executeTool("${name}", ${argsJson});
-            window.dispatchEvent(new CustomEvent('webmcp-fan-result', { 
-              detail: { result: result === undefined ? { __undefined: true } : result } 
-            }));
-          } catch (e) {
-            window.dispatchEvent(new CustomEvent('webmcp-fan-result', { 
-              detail: { error: e.message, stack: e.stack } 
-            }));
-          }
-        })();
-      `], { type: 'text/javascript' });
-      
-      const url = URL.createObjectURL(blob);
-      
-      const resultPromise = new Promise((resolve) => {
-        const handler = (e) => {
-          window.removeEventListener('webmcp-fan-result', handler);
-          URL.revokeObjectURL(url);
-          resolve(e.detail);
-        };
-        window.addEventListener('webmcp-fan-result', handler);
-      });
+      try {
+        // Wrapper to inject the adapter code safely without eval()
+        const script = document.createElement('script');
+        const blob = new Blob([`
+          (async () => {
+            console.debug('[WebMCP] Blob script started execution in page.');
+            try {
+              ${adapterSource}
+              console.debug('[WebMCP] Adapter source loaded, calling executeTool("${name}")...');
+              const result = await executeTool("${name}", ${argsJson});
+              console.debug('[WebMCP] executeTool returned:', result);
+              window.dispatchEvent(new CustomEvent('webmcp-fan-result', { 
+                detail: { result: result === undefined ? { __undefined: true } : result } 
+              }));
+            } catch (e) {
+              console.error('[WebMCP] Error inside blob script:', e);
+              window.dispatchEvent(new CustomEvent('webmcp-fan-result', { 
+                detail: { error: e.message, stack: e.stack } 
+              }));
+            }
+          })();
+        `], { type: 'text/javascript' });
+        
+        const url = URL.createObjectURL(blob);
+        console.debug('[WebMCP] Created Blob URL:', url);
+        
+        const resultPromise = new Promise((resolve, reject) => {
+          const timeout = setTimeout(() => {
+            window.removeEventListener('webmcp-fan-result', handler);
+            reject(new Error('Fan Tool execution timed out (10s)'));
+          }, 10000);
 
-      script.src = url;
-      (document.head || document.documentElement).appendChild(script);
-      script.remove();
+          const handler = (e) => {
+            console.debug('[WebMCP] Received result event:', e.detail);
+            clearTimeout(timeout);
+            window.removeEventListener('webmcp-fan-result', handler);
+            URL.revokeObjectURL(url);
+            resolve(e.detail);
+          };
+          window.addEventListener('webmcp-fan-result', handler);
+        });
 
-      return await resultPromise;
+        script.src = url;
+        (document.head || document.documentElement).appendChild(script);
+        console.debug('[WebMCP] Script tag appended to DOM');
+        script.remove();
+
+        return await resultPromise;
+      } catch (injectionError) {
+        console.error('[WebMCP] Error during script injection setup:', injectionError);
+        return { error: injectionError.message };
+      }
     },
     args: [spec.adapterCode, toolName, inputArgs],
-    world: 'MAIN', // This strategy works best in MAIN world to interact with page JS
+    world: 'MAIN',
   });
+
+  console.debug(`[WebMCP] executeScript returned results:`, results);
 
   if (!results || results.length === 0) {
     throw new Error('Fan Tool execution returned no results (script injection failed).');
