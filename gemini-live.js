@@ -229,10 +229,11 @@ async function startLive({ micBtn, getGenAI, getTools, isScriptToolEnabled, exec
                 try {
                   const result = await executeTool(tab.id, fc.name, JSON.stringify(fc.args));
                   logPrompt(`Tool "${fc.name}" result: ${result}`);
-                  responses.push({ id: fc.id, name: fc.name, response: { result }, scheduling: 'SILENT' });
+                  // Note: In the Live API, 'id' is used to match the response to the call.
+                  responses.push({ id: fc.id, name: fc.name, response: { result } });
                 } catch (e) {
                   logPrompt(`⚠️ Error executing tool "${fc.name}": ${e.message}`);
-                  responses.push({ id: fc.id, name: fc.name, response: { error: e.message }, scheduling: 'SILENT' });
+                  responses.push({ id: fc.id, name: fc.name, response: { error: e.message } });
                 }
               }
               if (responses.length > 0 && liveSession) {
