@@ -305,19 +305,18 @@ async function handleToolMessage({ message, tools, url }, sender) {
       const spec = fanSpecs[specName];
       console.debug(`[WebMCP] Checking spec "${specName}" against URL`, spec.matches);
       const isMatch = spec.matches.some((pattern) => {
-        // Convert glob pattern to Regex robustly in one pass
-        const regexStr = '^' + pattern.replace(/[.+^${}()|[\]\\]/g, (m) => {
-          if (m === '*') return '.*';
-          if (m === '?') return '.';
-          return '\\' + m;
-        }) + '$';
+        // Standard glob-to-regex: escape regex chars, then convert glob wildcards
+        const regexStr = '^' + pattern
+          .replace(/[.+^${}()|[\]\\]/g, '\\$&') // Escape all regex special chars
+          .replace(/\\\*/g, '.*')               // Convert escaped * back to .*
+          .replace(/\\\?/g, '.')                // Convert escaped ? back to .
+          + '$';
 
         const regex = new RegExp(regexStr);
         const match = regex.test(tabUrl);
         console.debug(`  - Pattern "${pattern}" -> Regex "${regexStr}" matches? ${match}`);
         return match;
       });
-
 
       if (isMatch) {
         console.debug(`[WebMCP] ✅ MATCH FOUND for spec "${specName}"`);
