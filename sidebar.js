@@ -320,74 +320,69 @@ async function handleToolMessage({ message, tools, url }, sender) {
   const allTools = [...(tools || []), ...matchingFanTools];
   // --- End Fan Spec Logic ---
 
-  if (tools || matchingFanTools.length > 0) {
-    tbody.innerHTML = '';
-    thead.innerHTML = '';
-    toolNames.innerHTML = '';
+  tbody.innerHTML = '';
+  thead.innerHTML = '';
+  toolNames.innerHTML = '';
 
-    const haveNewTools = JSON.stringify(currentTools) !== JSON.stringify(allTools);
-    currentTools = allTools;
+  const haveNewTools = JSON.stringify(currentTools) !== JSON.stringify(allTools);
+  currentTools = allTools;
 
-    if (toolsUpdateResolver) {
-      toolsUpdateResolver();
-      toolsUpdateResolver = null;
-    }
+  if (toolsUpdateResolver) {
+    toolsUpdateResolver();
+    toolsUpdateResolver = null;
+  }
 
-    if (allTools.length === 0) {
-      const row = document.createElement('tr');
-      row.innerHTML = `<td colspan="100%"><i>No tools registered yet in ${tabUrl || 'this tab'}</i></td>`;
-      tbody.appendChild(row);
-      inputArgsText.value = '';
-      inputArgsText.disabled = true;
-      toolNames.disabled = true;
-      executeBtn.disabled = true;
-      copyToClipboard.hidden = true;
-      return;
-    }
+  if (allTools.length === 0) {
+    const row = document.createElement('tr');
+    row.innerHTML = `<td colspan="100%"><i>No tools registered yet in ${tabUrl || 'this tab'}</i></td>`;
+    tbody.appendChild(row);
+    inputArgsText.value = '';
+    inputArgsText.disabled = true;
+    toolNames.disabled = true;
+    executeBtn.disabled = true;
+    copyToClipboard.hidden = true;
+    return;
+  }
 
-    inputArgsText.disabled = false;
-    toolNames.disabled = false;
-    executeBtn.disabled = false;
-    copyToClipboard.hidden = false;
+  inputArgsText.disabled = false;
+  toolNames.disabled = false;
+  executeBtn.disabled = false;
+  copyToClipboard.hidden = false;
 
-    // Use keys from the first tool that actually has them
-    const representativeTool = allTools[0];
-    const keys = Object.keys(representativeTool).filter(k => k !== 'isFanTool' && k !== 'specName');
+  // Use keys from the first tool that actually has them
+  const representativeTool = allTools[0];
+  const keys = Object.keys(representativeTool).filter(k => k !== 'isFanTool' && k !== 'specName');
+  
+  keys.forEach((key) => {
+    const th = document.createElement('th');
+    th.textContent = key;
+    thead.appendChild(th);
+  });
+
+  allTools.forEach((item) => {
+    const row = document.createElement('tr');
+    if (item.isFanTool) row.classList.add('fan-tool-row'); // Use CSS for tinting
     
     keys.forEach((key) => {
-      const th = document.createElement('th');
-      th.textContent = key;
-      thead.appendChild(th);
+      const td = document.createElement('td');
+      try {
+        td.innerHTML = `<pre>${JSON.stringify(JSON.parse(item[key]), '', '  ')}</pre>`;
+      } catch (error) {
+        td.textContent = item[key];
+      }
+      row.appendChild(td);
     });
+    tbody.appendChild(row);
 
-    allTools.forEach((item) => {
-      const row = document.createElement('tr');
-      if (item.isFanTool) row.classList.add('fan-tool-row'); // Use CSS for tinting
-      
-      keys.forEach((key) => {
-        const td = document.createElement('td');
-        try {
-          td.innerHTML = `<pre>${JSON.stringify(JSON.parse(item[key]), '', '  ')}</pre>`;
-        } catch (error) {
-          td.textContent = item[key];
-        }
-        row.appendChild(td);
-      });
-      tbody.appendChild(row);
+    const option = document.createElement('option');
+    option.textContent = (item.isFanTool ? '⭐ ' : '') + `"${item.name}"`;
+    option.value = item.name;
+    option.dataset.inputSchema = item.inputSchema;
+    toolNames.appendChild(option);
+  });
+  updateDefaultValueForInputArgs();
 
-      const option = document.createElement('option');
-      option.textContent = (item.isFanTool ? '⭐ ' : '') + `"${item.name}"`;
-      option.value = item.name;
-      option.dataset.inputSchema = item.inputSchema;
-      toolNames.appendChild(option);
-    });
-    updateDefaultValueForInputArgs();
-
-    if (haveNewTools) suggestUserPrompt();
-  } else if (tools === null || (Array.isArray(tools) && tools.length === 0)) {
-     // Handle case where content script returns no tools but we might have fan tools
-     // This is handled by the initial check for tabUrl and matchingFanTools.length
-  }
+  if (haveNewTools) suggestUserPrompt();
 }
 
 tbody.ondblclick = () => {
