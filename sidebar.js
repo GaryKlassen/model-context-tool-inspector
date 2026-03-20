@@ -649,50 +649,20 @@ async function handleFanToolExecution(tabId, toolDef, inputArgs) {
 
   const results = await chrome.scripting.executeScript({
     target: { tabId },
-    func: async (adapterSource, name, argsJson) => {
-      // We must avoid eval/new Function in this function because it's still subject to Extension CSP.
-      // But once we inject a <script> tag, the code INSIDE that tag follows the PAGE CSP.
-      // And our background script just removed the Page CSP headers!
-      
-      const bridgeId = `webmcp-fan-${Math.random().toString(36).substr(2, 9)}`;
-      const script = document.createElement('script');
-      
-      // We inline the entire logic into a string that becomes the script content.
-      // This string contains its own scoped try/catch and event dispatcher.
-      script.textContent = `
-        (async () => {
-          try {
-            // Define the adapter logic
-            ${adapterSource}
-            
-            // Call the executeTool function defined in the adapter source
-            const result = await executeTool("${name}", ${argsJson});
-            
-            window.dispatchEvent(new CustomEvent("${bridgeId}", { 
-              detail: { result: result === undefined ? null : result } 
-            }));
-          } catch (e) {
-            window.dispatchEvent(new CustomEvent("${bridgeId}", { 
-              detail: { error: e.message } 
-            }));
-          }
-        })();
-      `;
-
-      const resultPromise = new Promise((resolve) => {
-        const handler = (e) => {
-          window.removeEventListener(bridgeId, handler);
-          resolve(e.detail);
-        };
-        window.addEventListener(bridgeId, handler);
-      });
-
-      (document.head || document.documentElement).appendChild(script);
-      script.remove();
-      return await resultPromise;
+    func: (adapterSource, name, argsJson) => {
+      try {
+        const fn = new Function('name', 'args', `
+          ${adapterSource}
+          return executeTool(name, args);
+        `);
+        const result = fn(name, JSON.parse(argsJson));
+        return result;
+      } catch (e) {
+        return { __error: e.message };
+      }
     },
     args: [spec.adapterCode, toolName, inputArgs],
-    world: 'MAIN',
+    world: 'ISOLATED',
   });
 
   if (!results || results.length === 0) {
@@ -700,8 +670,8 @@ async function handleFanToolExecution(tabId, toolDef, inputArgs) {
   }
 
   const result = results[0].result;
-  if (result && typeof result === 'object' && result.error) {
-    throw new Error(`Fan Tool Adapter Error: ${result.error}`);
+  if (result && typeof result === 'object' && result.__error) {
+    throw new Error(result.__error);
   }
 
   return result;
