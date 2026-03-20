@@ -49,57 +49,36 @@ const micBtn = document.getElementById('micBtn');
   }
 })();
 
-let currentTools;
-
+let currentTools = [];
 let userPromptPendingId = 0;
 let lastSuggestedUserPrompt = '';
 
 let toolsUpdateResolver;
 
 // Listen for the results coming back from content.js
-chrome.runtime.onMessage.addListener(async ({ message, tools, url }, sender) => {
+chrome.runtime.onMessage.addListener((msg, sender) => {
+  if (msg.tools || msg.message) {
+    handleToolMessage(msg, sender);
+  }
+});
+
+async function handleToolMessage({ message, tools, url }, sender) {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (sender.tab && sender.tab.id !== tab.id) return;
+  if (!sender.tab || sender.tab.id !== tab?.id) return;
 
-  tbody.innerHTML = '';
-  thead.innerHTML = '';
-  toolNames.innerHTML = '';
-
-  statusDiv.textContent = message;
-  statusDiv.hidden = !message;
-
-  const haveNewTools = JSON.stringify(currentTools) !== JSON.stringify(tools);
-
-  currentTools = tools;
-
-  if (!tools || tools.length === 0) {
-    const row = document.createElement('tr');
-    row.innerHTML = `<td colspan="100%"><i>No tools registered yet in ${url || tab.url}</i></td>`;
-    tbody.appendChild(row);
-    inputArgsText.value = '';
-    inputArgsText.disabled = true;
-    toolNames.disabled = true;
-    executeBtn.disabled = true;
-    copyToClipboard.hidden = true;
-    return;
+  if (message !== undefined) {
+    statusDiv.textContent = message || '';
+    statusDiv.hidden = !message;
   }
 
-  inputArgsText.disabled = false;
-  toolNames.disabled = false;
-  executeBtn.disabled = false;
-  copyToClipboard.hidden = false;
+  if (tools) {
+    tbody.innerHTML = '';
+    thead.innerHTML = '';
+    toolNames.innerHTML = '';
 
-  const keys = Object.keys(tools[0]);
-  keys.forEach((key) => {
-    const th = document.createElement('th');
-    th.textContent = key;
-    thead.appendChild(th);
-  });
+    const haveNewTools = JSON.stringify(currentTools) !== JSON.stringify(tools);
+    currentTools = tools;
 
-<<<<<<< HEAD
-  tools.forEach((item) => {
-    const row = document.createElement('tr');
-=======
     if (toolsUpdateResolver) {
       toolsUpdateResolver();
       toolsUpdateResolver = null;
@@ -123,35 +102,43 @@ chrome.runtime.onMessage.addListener(async ({ message, tools, url }, sender) => 
     copyToClipboard.hidden = false;
 
     const keys = Object.keys(tools[0]);
->>>>>>> feature/sequential-tools-navigation
     keys.forEach((key) => {
-      const td = document.createElement('td');
-      try {
-        td.innerHTML = `<pre>${JSON.stringify(JSON.parse(item[key]), '', '  ')}</pre>`;
-      } catch (error) {
-        td.textContent = item[key];
-      }
-      row.appendChild(td);
+      const th = document.createElement('th');
+      th.textContent = key;
+      thead.appendChild(th);
     });
-    tbody.appendChild(row);
 
-    const option = document.createElement('option');
-    option.textContent = `"${item.name}"`;
-    option.value = item.name;
-    option.dataset.inputSchema = item.inputSchema;
-    toolNames.appendChild(option);
-  });
-  updateDefaultValueForInputArgs();
+    tools.forEach((item) => {
+      const row = document.createElement('tr');
+      keys.forEach((key) => {
+        const td = document.createElement('td');
+        try {
+          td.innerHTML = `<pre>${JSON.stringify(JSON.parse(item[key]), '', '  ')}</pre>`;
+        } catch (error) {
+          td.textContent = item[key];
+        }
+        row.appendChild(td);
+      });
+      tbody.appendChild(row);
 
-  if (haveNewTools) suggestUserPrompt();
-});
+      const option = document.createElement('option');
+      option.textContent = `"${item.name}"`;
+      option.value = item.name;
+      option.dataset.inputSchema = item.inputSchema;
+      toolNames.appendChild(option);
+    });
+    updateDefaultValueForInputArgs();
+
+    if (haveNewTools) suggestUserPrompt();
+  }
+}
 
 tbody.ondblclick = () => {
   tbody.classList.toggle('prettify');
 };
 
 copyAsScriptToolConfig.onclick = async () => {
-  const text = (currentTools || [])
+  const text = currentTools
     .map((tool) => {
       return `\
 script_tools {
@@ -165,7 +152,7 @@ script_tools {
 };
 
 copyAsJSON.onclick = async () => {
-  const tools = (currentTools || []).map((tool) => {
+  const tools = currentTools.map((tool) => {
     return {
       name: tool.name,
       description: tool.description,
@@ -206,7 +193,7 @@ async function initGenAI() {
 initGenAI();
 
 async function suggestUserPrompt() {
-  if (!currentTools || currentTools.length == 0 || !genAI || userPromptText.value !== lastSuggestedUserPrompt)
+  if (currentTools.length == 0 || !genAI || userPromptText.value !== lastSuggestedUserPrompt)
     return;
   const userPromptId = ++userPromptPendingId;
 
@@ -299,7 +286,7 @@ async function promptAI() {
           toolResponses.push({ functionResponse: { name, response: { error: e.message } } });
         }
       }
-      
+
       // If a navigation occurred, wait for the page to load and tools to be registered.
       const [currentTab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (currentTab.status === 'loading') {
@@ -384,9 +371,27 @@ initGeminiLive({
 
 // Utils
 
+let logBuffer = [];
+let logPending = false;
+
 function logPrompt(text) {
-  promptResults.textContent += `${text}\n`;
-  promptResults.scrollTop = promptResults.scrollHeight;
+  // Defer logging and batch updates to avoid blocking main thread logic.
+  logBuffer.push(text);
+
+  if (!logPending) {
+    logPending = true;
+    setTimeout(() => {
+      requestAnimationFrame(() => {
+        const fragment = document.createDocumentFragment();
+        while (logBuffer.length > 0) {
+          fragment.appendChild(document.createTextNode(`${logBuffer.shift()}\n`));
+        }
+        promptResults.appendChild(fragment);
+        promptResults.scrollTop = promptResults.scrollHeight;
+        logPending = false;
+      });
+    }, 0);
+  }
 }
 
 function getFormattedDate() {
@@ -408,7 +413,7 @@ function getConfig() {
     'CRITICAL RULE: Whenever the user provides a relative date (e.g., "next Monday", "tomorrow", "in 3 days"),  you must calculate the exact calendar date based on today\'s date.',
   ];
 
-  const functionDeclarations = (currentTools || []).map((tool) => {
+  const functionDeclarations = currentTools.map((tool) => {
     return {
       name: tool.name,
       description: tool.description,
