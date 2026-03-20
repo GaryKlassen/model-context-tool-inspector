@@ -54,6 +54,8 @@ let currentTools;
 let userPromptPendingId = 0;
 let lastSuggestedUserPrompt = '';
 
+let toolsUpdateResolver;
+
 // Listen for the results coming back from content.js
 chrome.runtime.onMessage.addListener(async ({ message, tools, url }, sender) => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -94,8 +96,34 @@ chrome.runtime.onMessage.addListener(async ({ message, tools, url }, sender) => 
     thead.appendChild(th);
   });
 
+<<<<<<< HEAD
   tools.forEach((item) => {
     const row = document.createElement('tr');
+=======
+    if (toolsUpdateResolver) {
+      toolsUpdateResolver();
+      toolsUpdateResolver = null;
+    }
+
+    if (!tools || tools.length === 0) {
+      const row = document.createElement('tr');
+      row.innerHTML = `<td colspan="100%"><i>No tools registered yet in ${url || tab?.url || 'this tab'}</i></td>`;
+      tbody.appendChild(row);
+      inputArgsText.value = '';
+      inputArgsText.disabled = true;
+      toolNames.disabled = true;
+      executeBtn.disabled = true;
+      copyToClipboard.hidden = true;
+      return;
+    }
+
+    inputArgsText.disabled = false;
+    toolNames.disabled = false;
+    executeBtn.disabled = false;
+    copyToClipboard.hidden = false;
+
+    const keys = Object.keys(tools[0]);
+>>>>>>> feature/sequential-tools-navigation
     keys.forEach((key) => {
       const td = document.createElement('td');
       try {
@@ -254,33 +282,33 @@ async function promptAI() {
       finalResponseGiven = true;
     } else {
       // Prioritize tool calls over text logging
-      const toolResponses = [];
-      const promises = functionCalls.map(async ({ name, args }) => {
-        const inputArgs = JSON.stringify(args);
-        const toolPromise = executeTool(tab.id, name, inputArgs);
-        logPrompt(`AI calling tool "${name}" with ${inputArgs}`);
-        try {
-          const result = await toolPromise;
-          logPrompt(`Tool "${name}" result: ${result}`);
-          return { functionResponse: { name, response: { result } } };
-        } catch (e) {
-          logPrompt(`⚠️ Error executing tool "${name}": ${e.message}`);
-          return { functionResponse: { name, response: { error: e.message } } };
-        }
-      });
-
+      // Execute tool calls sequentially to handle potential dependencies.
       if (response.text) {
         logPrompt(`AI result: ${response.text.trim()}`);
       }
 
-      const results = await Promise.all(promises);
-      toolResponses.push(...results);
-
-      // FIXME: New WebMCP tools may not be discovered if there's a navigation.
-      // We check if the tab is loading, but the artificial 500ms timeout is not robust enough.
+      for (const { name, args } of functionCalls) {
+        const inputArgs = JSON.stringify(args);
+        logPrompt(`AI calling tool "${name}" with ${inputArgs}`);
+        try {
+          const result = await executeTool(tab.id, name, inputArgs);
+          logPrompt(`Tool "${name}" result: ${result}`);
+          toolResponses.push({ functionResponse: { name, response: { result } } });
+        } catch (e) {
+          logPrompt(`⚠️ Error executing tool "${name}": ${e.message}`);
+          toolResponses.push({ functionResponse: { name, response: { error: e.message } } });
+        }
+      }
+      
+      // If a navigation occurred, wait for the page to load and tools to be registered.
       const [currentTab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (currentTab.status === 'loading') {
-        await new Promise((r) => setTimeout(r, 500));
+        await Promise.race([
+          new Promise(resolve => { toolsUpdateResolver = resolve; }),
+          waitForPageLoad(currentTab.id),
+          new Promise(resolve => setTimeout(resolve, 2000))
+        ]);
+        toolsUpdateResolver = null;
       }
 
       const sendMessageParams = { message: toolResponses, config: getConfig() };
