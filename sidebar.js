@@ -6,15 +6,12 @@
 import { GoogleGenAI } from './js-genai.js';
 import { initGeminiLive, MODEL } from './gemini-live.js';
 
-<<<<<<< HEAD
-=======
 const TEXT_MODEL = 'gemini-3.1-flash-lite-preview';
 
 if (!localStorage.model || localStorage.model.includes('gemini-2.5') || localStorage.model.includes('gemini-2.0')) {
   localStorage.model = TEXT_MODEL;
 }
 
->>>>>>> feature/webmcp-fan-specs
 const statusDiv = document.getElementById('status');
 const tbody = document.getElementById('tableBody');
 const thead = document.getElementById('tableHeaderRow');
@@ -41,18 +38,6 @@ const fanSpecRegistryList = document.getElementById('fanSpecRegistryList');
 const communitySpecsList = document.getElementById('communitySpecsList');
 const communitySpecsHeader = document.getElementById('communitySpecsHeader');
 
-<<<<<<< HEAD
-=======
-if (!micBtn) console.error('Could not find micBtn in DOM');
-if (!enableScriptTool) console.error('Could not find enableScriptTool in DOM');
-if (!loadFanSpecBtn) console.error('Could not find loadFanSpecBtn in DOM');
-if (!addFanSpecGitHubBtn) console.error('Could not find addFanSpecGitHubBtn in DOM');
-if (!browseFanSpecsBtn) console.error('Could not find browseFanSpecsBtn in DOM');
-if (!fanSpecInput) console.error('Could not find fanSpecInput in DOM');
-if (!fanSpecRegistryList) console.error('Could not find fanSpecRegistryList in DOM');
-if (!communitySpecsList) console.error('Could not find communitySpecsList in DOM');
-
->>>>>>> feature/webmcp-fan-specs
 // Inject content script first.
 (async () => {
   try {
@@ -82,9 +67,8 @@ let currentTools = [];
 let userPromptPendingId = 0;
 let lastSuggestedUserPrompt = '';
 
-<<<<<<< HEAD
 let toolsUpdateResolver;
-=======
+
 loadFanSpecBtn.onclick = () => fanSpecInput.click();
 
 addFanSpecGitHubBtn.onclick = async () => {
@@ -296,7 +280,6 @@ async function renderFanSpecList() {
 
 // Initial render
 renderFanSpecList();
->>>>>>> feature/webmcp-fan-specs
 
 // Listen for the results coming back from content.js
 chrome.runtime.onMessage.addListener((msg, sender) => {
@@ -355,16 +338,12 @@ async function handleToolMessage({ message, tools, url }, sender) {
     const haveNewTools = JSON.stringify(currentTools) !== JSON.stringify(allTools);
     currentTools = allTools;
 
-<<<<<<< HEAD
     if (toolsUpdateResolver) {
       toolsUpdateResolver();
       toolsUpdateResolver = null;
     }
 
-    if (!tools || tools.length === 0) {
-=======
     if (allTools.length === 0) {
->>>>>>> feature/webmcp-fan-specs
       const row = document.createElement('tr');
       row.innerHTML = `<td colspan="100%"><i>No tools registered yet in ${tabUrl || 'this tab'}</i></td>`;
       tbody.appendChild(row);
@@ -465,27 +444,17 @@ async function initGenAI() {
     env = (await envModulePromise).default;
   } catch {}
   if (env?.apiKey) localStorage.apiKey ??= env.apiKey;
-<<<<<<< HEAD
-
-  // Transition from old version or if it was accidentally set to the live model
-  if (!localStorage.model || localStorage.model.includes('gemini-2.0') || localStorage.model === MODEL) {
-    localStorage.model = 'gemini-2.5-flash';
-=======
   
-  if (!localStorage.model || localStorage.model.includes('gemini-2.5')) {
+  if (!localStorage.model || localStorage.model.includes('gemini-2.5') || localStorage.model.includes('gemini-2.0') || localStorage.model === MODEL) {
     localStorage.model = TEXT_MODEL;
->>>>>>> feature/webmcp-fan-specs
   }
 
   if (localStorage.apiKey) {
     // Default to v1beta for chat stability. Gemini Live will explicitly use v1alpha when connecting.
     genAI = new GoogleGenAI({ apiKey: localStorage.apiKey, httpOptions: { apiVersion: 'v1beta' } });
   }
-<<<<<<< HEAD
-=======
   
   enableScriptTool.checked = localStorage.enableScriptTool === 'true';
->>>>>>> feature/webmcp-fan-specs
   promptBtn.disabled = !localStorage.apiKey;
   resetBtn.disabled = !localStorage.apiKey;
 }
@@ -579,6 +548,7 @@ async function promptAI() {
         logPrompt(`AI result: ${response.text.trim()}`);
       }
 
+      const toolResponses = [];
       for (const { name, args } of functionCalls) {
         const inputArgs = JSON.stringify(args);
         logPrompt(`AI calling tool "${name}" with ${inputArgs}`);
