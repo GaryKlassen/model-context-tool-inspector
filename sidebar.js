@@ -304,14 +304,20 @@ async function handleToolMessage({ message, tools, url }, sender) {
     for (const specName in fanSpecs) {
       const spec = fanSpecs[specName];
       console.debug(`[WebMCP] Checking spec "${specName}" against URL`, spec.matches);
-      
       const isMatch = spec.matches.some((pattern) => {
-        const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&');
-        const regex = new RegExp('^' + escaped.replace(/\\\*/g, '.*').replace(/\\\?/g, '.') + '$');
+        // Convert glob pattern to Regex robustly in one pass
+        const regexStr = '^' + pattern.replace(/[.+^${}()|[\]\\]/g, (m) => {
+          if (m === '*') return '.*';
+          if (m === '?') return '.';
+          return '\\' + m;
+        }) + '$';
+
+        const regex = new RegExp(regexStr);
         const match = regex.test(tabUrl);
-        console.debug(`  - Pattern "${pattern}" matches? ${match}`);
+        console.debug(`  - Pattern "${pattern}" -> Regex "${regexStr}" matches? ${match}`);
         return match;
       });
+
 
       if (isMatch) {
         console.debug(`[WebMCP] ✅ MATCH FOUND for spec "${specName}"`);
