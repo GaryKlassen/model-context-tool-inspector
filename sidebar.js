@@ -28,12 +28,24 @@ const micBtn = document.getElementById('micBtn');
 (async () => {
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    await chrome.tabs.sendMessage(tab.id, { action: 'LIST_TOOLS' });
+    if (tab && tab.url && (tab.url.startsWith('http') || tab.url.startsWith('file'))) {
+      let attempts = 0;
+      const send = async () => {
+        try {
+          await chrome.tabs.sendMessage(tab.id, { action: 'LIST_TOOLS' });
+        } catch (e) {
+          if (attempts++ < 5) setTimeout(send, 200 * attempts);
+        }
+      };
+      send();
+    } else {
+      const statusDiv = document.getElementById('status');
+      statusDiv.textContent = 'WebMCP tools are only available on web pages.';
+      statusDiv.hidden = false;
+      copyToClipboard.hidden = true;
+    }
   } catch (error) {
-    const statusDiv = document.getElementById('status');
-    statusDiv.textContent = error;
-    statusDiv.hidden = false;
-    copyToClipboard.hidden = true;
+    // Ignore initial connection errors
   }
 })();
 
@@ -111,7 +123,7 @@ tbody.ondblclick = () => {
 };
 
 copyAsScriptToolConfig.onclick = async () => {
-  const text = currentTools
+  const text = (currentTools || [])
     .map((tool) => {
       return `\
 script_tools {
@@ -125,7 +137,7 @@ script_tools {
 };
 
 copyAsJSON.onclick = async () => {
-  const tools = currentTools.map((tool) => {
+  const tools = (currentTools || []).map((tool) => {
     return {
       name: tool.name,
       description: tool.description,
@@ -166,9 +178,10 @@ async function initGenAI() {
 initGenAI();
 
 async function suggestUserPrompt() {
-  if (currentTools.length == 0 || !genAI || userPromptText.value !== lastSuggestedUserPrompt)
+  if (!currentTools || currentTools.length == 0 || !genAI || userPromptText.value !== lastSuggestedUserPrompt)
     return;
   const userPromptId = ++userPromptPendingId;
+
   const response = await genAI.models.generateContent({
     model: localStorage.model,
     contents: [
@@ -186,18 +199,15 @@ async function suggestUserPrompt() {
       JSON.stringify(currentTools),
     ],
   });
+
   if (userPromptId !== userPromptPendingId || userPromptText.value !== lastSuggestedUserPrompt)
     return;
   lastSuggestedUserPrompt = response.text;
-  userPromptText.value = '';
-  for (const chunk of response.text) {
-    await new Promise((r) => requestAnimationFrame(r));
-    userPromptText.value += chunk;
-  }
+  userPromptText.value = lastSuggestedUserPrompt;
 }
 
 userPromptText.onkeydown = (event) => {
-  if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+  if (event.key === 'Enter' && !event.shiftKey) {
     event.preventDefault();
     promptBtn.click();
   }
@@ -222,7 +232,8 @@ async function promptAI() {
   const message = userPromptText.value;
   userPromptText.value = '';
   lastSuggestedUserPrompt = '';
-  promptResults.textContent += `User prompt: "${message}"\n`;
+  logPrompt(`User prompt: "${message}"`);
+
   const sendMessageParams = { message, config: getConfig() };
   trace.push({ userPrompt: sendMessageParams });
   let currentResult = await chat.sendMessage(sendMessageParams);
@@ -231,35 +242,46 @@ async function promptAI() {
   while (!finalResponseGiven) {
     const response = currentResult;
     trace.push({ response });
+
     const functionCalls = response.functionCalls || [];
 
     if (functionCalls.length === 0) {
-      if (!response.text) {
-        logPrompt(`⚠️ AI response has no text: ${JSON.stringify(response.candidates)}\n`);
+      if (response.text) {
+        logPrompt(`AI result: ${response.text.trim()}`);
       } else {
-        logPrompt(`AI result: ${response.text?.trim()}\n`);
+        logPrompt(`⚠️ AI response has no text: ${JSON.stringify(response.candidates)}`);
       }
       finalResponseGiven = true;
     } else {
+      // Prioritize tool calls over text logging
       const toolResponses = [];
-      for (const { name, args } of functionCalls) {
+      const promises = functionCalls.map(async ({ name, args }) => {
         const inputArgs = JSON.stringify(args);
+        const toolPromise = executeTool(tab.id, name, inputArgs);
         logPrompt(`AI calling tool "${name}" with ${inputArgs}`);
         try {
-          const result = await executeTool(tab.id, name, inputArgs);
-          toolResponses.push({ functionResponse: { name, response: { result } } });
+          const result = await toolPromise;
           logPrompt(`Tool "${name}" result: ${result}`);
+          return { functionResponse: { name, response: { result } } };
         } catch (e) {
           logPrompt(`⚠️ Error executing tool "${name}": ${e.message}`);
-          toolResponses.push({
-            functionResponse: { name, response: { error: e.message } },
-          });
+          return { functionResponse: { name, response: { error: e.message } } };
         }
+      });
+
+      if (response.text) {
+        logPrompt(`AI result: ${response.text.trim()}`);
       }
 
+      const results = await Promise.all(promises);
+      toolResponses.push(...results);
+
       // FIXME: New WebMCP tools may not be discovered if there's a navigation.
-      // An articial timeout is introduced for mitigation but it's not robust enough.
-      await new Promise((r) => setTimeout(r, 500));
+      // We check if the tab is loading, but the artificial 500ms timeout is not robust enough.
+      const [currentTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (currentTab.status === 'loading') {
+        await new Promise((r) => setTimeout(r, 500));
+      }
 
       const sendMessageParams = { message: toolResponses, config: getConfig() };
       trace.push({ userPrompt: sendMessageParams });
@@ -307,16 +329,10 @@ async function executeTool(tabId, name, inputArgs) {
       name,
       inputArgs,
     });
-    if (result !== null) return result;
+    return result;
   } catch (error) {
-    if (!error.message.includes('message channel is closed')) throw error;
+    return Promise.reject(error.message);
   }
-  // A navigation was triggered. The result will be on the next document.
-  // TODO: Handle case where a new tab is opened.
-  await waitForPageLoad(tabId);
-  return await chrome.tabs.sendMessage(tabId, {
-    action: 'GET_CROSS_DOCUMENT_SCRIPT_TOOL_RESULT',
-  });
 }
 
 toolNames.onchange = updateDefaultValueForInputArgs;
@@ -364,7 +380,7 @@ function getConfig() {
     'CRITICAL RULE: Whenever the user provides a relative date (e.g., "next Monday", "tomorrow", "in 3 days"),  you must calculate the exact calendar date based on today\'s date.',
   ];
 
-  const functionDeclarations = currentTools.map((tool) => {
+  const functionDeclarations = (currentTools || []).map((tool) => {
     return {
       name: tool.name,
       description: tool.description,
@@ -385,83 +401,45 @@ function generateTemplateFromSchema(schema) {
     return schema.const;
   }
 
-  if (Array.isArray(schema.oneOf) && schema.oneOf.length > 0) {
-    return generateTemplateFromSchema(schema.oneOf[0]);
-  }
-
   if (schema.hasOwnProperty('default')) {
     return schema.default;
   }
 
-  if (Array.isArray(schema.examples) && schema.examples.length > 0) {
-    return schema.examples[0];
+  if (schema.enum && schema.enum.length > 0) {
+    return schema.enum[0];
   }
 
   switch (schema.type) {
     case 'object':
       const obj = {};
       if (schema.properties) {
-        Object.keys(schema.properties).forEach((key) => {
+        for (const key in schema.properties) {
           obj[key] = generateTemplateFromSchema(schema.properties[key]);
-        });
+        }
       }
       return obj;
 
     case 'array':
+      const arr = [];
       if (schema.items) {
-        return [generateTemplateFromSchema(schema.items)];
+        arr.push(generateTemplateFromSchema(schema.items));
       }
-      return [];
+      return arr;
 
     case 'string':
-      if (schema.enum && schema.enum.length > 0) {
-        return schema.enum[0];
+      if (schema.format === 'date-time') {
+        return new Date().toISOString();
       }
       if (schema.format === 'date') {
-        return new Date().toISOString().substring(0, 10);
+        return new Date().toISOString().split('T')[0];
       }
-      // yyyy-MM-ddThh:mm:ss.SSS
-      if (
-        schema.format ===
-        '^[0-9]{4}-(0[1-9]|1[0-2])-[0-9]{2}T([01][0-9]|2[0-3]):[0-5][0-9](:[0-5][0-9](\\.[0-9]{1,3})?)?$'
-      ) {
-        return new Date().toISOString().substring(0, 23);
+      if (schema.format === 'time') {
+        return new Date().toISOString().split('T')[1].split('.')[0];
       }
-      // yyyy-MM-ddThh:mm:ss
-      if (
-        schema.format ===
-        '^[0-9]{4}-(0[1-9]|1[0-2])-[0-9]{2}T([01][0-9]|2[0-3]):[0-5][0-9](:[0-5][0-9])?$'
-      ) {
-        return new Date().toISOString().substring(0, 19);
+      if (schema.format === 'uri') {
+        return 'https://example.com';
       }
-      // yyyy-MM-ddThh:mm
-      if (schema.format === '^[0-9]{4}-(0[1-9]|1[0-2])-[0-9]{2}T([01][0-9]|2[0-3]):[0-5][0-9]$') {
-        return new Date().toISOString().substring(0, 16);
-      }
-      // yyyy-MM
-      if (schema.format === '^[0-9]{4}-(0[1-9]|1[0-2])$') {
-        return new Date().toISOString().substring(0, 7);
-      }
-      // yyyy-Www
-      if (schema.format === '^[0-9]{4}-W(0[1-9]|[1-4][0-9]|5[0-3])$') {
-        return `${new Date().toISOString().substring(0, 4)}-W01`;
-      }
-      // HH:mm:ss.SSS
-      if (schema.format === '^([01][0-9]|2[0-3]):[0-5][0-9](:[0-5][0-9](\\.[0-9]{1,3})?)?$') {
-        return new Date().toISOString().substring(11, 23);
-      }
-      // HH:mm:ss
-      if (schema.format === '^([01][0-9]|2[0-3]):[0-5][0-9](:[0-5][0-9])?$') {
-        return new Date().toISOString().substring(11, 19);
-      }
-      // HH:mm
-      if (schema.format === '^([01][0-9]|2[0-3]):[0-5][0-9]$') {
-        return new Date().toISOString().substring(11, 16);
-      }
-      if (schema.format === '^#[0-9a-zA-Z]{6}$') {
-        return '#ff00ff';
-      }
-      if (schema.format === 'tel') {
+      if (schema.format === 'phone') {
         return '123-456-7890';
       }
       if (schema.format === 'email') {
