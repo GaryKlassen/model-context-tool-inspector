@@ -274,7 +274,7 @@ renderFanSpecList();
 
 // Listen for the results coming back from content.js
 chrome.runtime.onMessage.addListener((msg, sender) => {
-  if (msg.tools || msg.message) {
+  if (msg.tools || msg.message || msg.url) {
     handleToolMessage(msg, sender);
   }
 });

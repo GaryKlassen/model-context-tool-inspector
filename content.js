@@ -62,7 +62,7 @@ chrome.runtime.onMessage.addListener((message, _, reply) => {
 function listTools() {
   const tools = navigator.modelContextTesting.listTools();
   console.debug(`[WebMCP] Got ${tools.length} tools`, tools);
-  chrome.runtime.sendMessage({ tools, url: location.href });
+  chrome.runtime.sendMessage({ tools, url: window.location.href });
 }
 
 window.addEventListener('toolactivated', ({ toolName }) => {
