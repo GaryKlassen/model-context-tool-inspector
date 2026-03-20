@@ -228,10 +228,17 @@ async function startLive({ micBtn, getGenAI, getTools, isScriptToolEnabled, exec
               for (const fc of fcs) {
                 logPrompt(`AI calling tool "${fc.name}"`);
                 try {
-                  const result = await executeTool(tab.id, fc.name, JSON.stringify(fc.args));
+                  // Robust tool name matching: handle AI naming variations
+                  const availableTools = getTools();
+                  const exactMatch = availableTools.find(t => t.name === fc.name);
+                  const fuzzyMatch = exactMatch || availableTools.find(t => 
+                    t.name.includes(fc.name) || fc.name.includes(t.name)
+                  );
+                  
+                  const targetToolName = fuzzyMatch ? fuzzyMatch.name : fc.name;
+                  
+                  const result = await executeTool(tab.id, targetToolName, JSON.stringify(fc.args));
                   logPrompt(`Tool "${fc.name}" result: ${result}`);
-                  // Note: In the Live API, 'id' is used to match the response to the call.
-                  // The result must be a plain object or primitive.
                   responses.push({ 
                     id: fc.id, 
                     name: fc.name, 
