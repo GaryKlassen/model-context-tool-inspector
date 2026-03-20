@@ -5,6 +5,7 @@
 
 import { GoogleGenAI } from './js-genai.js';
 import { initGeminiLive, MODEL } from './gemini-live.js';
+import { executeFanSequence } from './fan-engine.js';
 
 const TEXT_MODEL = 'gemini-3.1-flash-lite-preview';
 
@@ -181,37 +182,25 @@ fanSpecInput.onchange = async (event) => {
   if (files.length === 0) return;
 
   try {
-    let spec = null;
-    let adapterCode = null;
-
     for (const file of files) {
       if (file.name.endsWith('.json')) {
         const text = await file.text();
-        const json = JSON.parse(text);
-        if (json.adapterCode) adapterCode = json.adapterCode;
-        spec = json;
-      } else if (file.name.endsWith('.js')) {
-        adapterCode = await file.text();
+        const spec = JSON.parse(text);
+
+        if (!spec.name || !spec.matches || !spec.tools) {
+          throw new Error('Invalid Fan Spec: Missing metadata (name, matches, tools).');
+        }
+
+        spec.sourceUrl = file.name === 'mcp.json' ? 'Local File' : file.name;
+
+        const stored = await chrome.storage.local.get('fanSpecs');
+        const specs = stored.fanSpecs || {};
+        specs[spec.name] = spec;
+        await chrome.storage.local.set({ fanSpecs: specs });
+
+        logPrompt(`✅ Added Fan Spec: "${spec.name}" (${spec.tools.length} tools)`);
       }
     }
-
-    if (!spec || !spec.name || !spec.matches || !spec.tools) {
-      throw new Error('Invalid Fan Spec: Missing metadata (.json file with name, matches, tools).');
-    }
-
-    if (!adapterCode) {
-      throw new Error('Invalid Fan Spec: Missing adapter logic (.js file or adapterCode in JSON).');
-    }
-
-    spec.adapterCode = adapterCode;
-    spec.sourceUrl = 'Local Sideload';
-
-    const stored = await chrome.storage.local.get('fanSpecs');
-    const specs = stored.fanSpecs || {};
-    specs[spec.name] = spec;
-    await chrome.storage.local.set({ fanSpecs: specs });
-
-    logPrompt(`✅ Added Fan Spec: "${spec.name}" (${spec.tools.length} tools)`);
     
     renderFanSpecList();
 
@@ -640,41 +629,14 @@ async function handleFanToolExecution(tabId, toolDef, inputArgs) {
   const { specName, name: toolName } = toolDef;
   const stored = await chrome.storage.local.get('fanSpecs');
   const spec = stored.fanSpecs?.[specName];
+  const toolSpec = spec?.tools.find(t => t.name === toolName);
 
-  if (!spec || !spec.adapterCode) {
-    throw new Error(`Adapter code not found for Fan Spec: "${specName}"`);
+  if (!toolSpec || !toolSpec.sequence) {
+    throw new Error(`Execution sequence not found for tool "${toolName}" in Spec "${specName}"`);
   }
 
-  logPrompt(`⚙️ Executing Fan Tool "${toolName}" via adapter...`);
-
-  const results = await chrome.scripting.executeScript({
-    target: { tabId },
-    func: (adapterSource, name, argsJson) => {
-      try {
-        const fn = new Function('name', 'args', `
-          ${adapterSource}
-          return executeTool(name, args);
-        `);
-        const result = fn(name, JSON.parse(argsJson));
-        return result;
-      } catch (e) {
-        return { __error: e.message };
-      }
-    },
-    args: [spec.adapterCode, toolName, inputArgs],
-    world: 'ISOLATED',
-  });
-
-  if (!results || results.length === 0) {
-    throw new Error('Fan Tool execution returned no results (script injection failed).');
-  }
-
-  const result = results[0].result;
-  if (result && typeof result === 'object' && result.__error) {
-    throw new Error(result.__error);
-  }
-
-  return result;
+  logPrompt(`⚙️ Executing Fan Tool "${toolName}" via sequence engine...`);
+  return await executeFanSequence(tabId, toolSpec.sequence, JSON.parse(inputArgs));
 }
 
 async function handleWriteScript(task) {
