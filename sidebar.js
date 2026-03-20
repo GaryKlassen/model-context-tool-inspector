@@ -645,25 +645,63 @@ async function handleFanToolExecution(tabId, toolDef, inputArgs) {
     throw new Error(`Adapter code not found for Fan Spec: "${specName}"`);
   }
 
-  logPrompt(`⚙️ Executing Fan Tool "${toolName}" via adapter (Isolated World)...`);
+  logPrompt(`⚙️ Executing Fan Tool "${toolName}" via adapter (Main World)...`);
 
-  try {
-    const result = await chrome.tabs.sendMessage(tabId, {
-      action: 'RUN_FAN_ADAPTER',
-      adapterSource: spec.adapterCode,
-      name: toolName,
-      inputArgs
-    });
+  const results = await chrome.scripting.executeScript({
+    target: { tabId },
+    func: async (adapterSource, name, argsJson) => {
+      // We wrap the entire execution in a scoped IIFE that we inject into the page
+      // This is necessary because chrome.scripting.executeScript itself can't run dynamic code strings easily
+      // But we can create a temporary function that DOES.
+      
+      const bridgeId = `webmcp-fan-${Math.random().toString(36).substr(2, 9)}`;
+      const script = document.createElement('script');
+      script.textContent = `
+        (async () => {
+          try {
+            // Define adapter in a local scope
+            const adapter = (() => {
+              ${adapterSource}
+              return { executeTool: typeof executeTool !== 'undefined' ? executeTool : null };
+            })();
 
-    if (result && typeof result === 'object' && result.error) {
-      throw new Error(result.error);
-    }
+            if (typeof adapter.executeTool !== 'function') {
+              throw new Error('Fan Spec adapter logic did not define an executeTool function.');
+            }
 
-    return result;
-  } catch (error) {
-    console.error(`[WebMCP] Fan Tool "${toolName}" execution failed:`, error);
-    throw new Error(`Fan Tool Adapter Error: ${error.message}`);
+            const result = await adapter.executeTool("${name}", ${argsJson});
+            window.dispatchEvent(new CustomEvent("${bridgeId}", { 
+              detail: { result: result === undefined ? null : result } 
+            }));
+          } catch (e) {
+            window.dispatchEvent(new CustomEvent("${bridgeId}", { 
+              detail: { error: e.message } 
+            }));
+          }
+        })();
+      `;
+
+      const resultPromise = new Promise((resolve) => {
+        const handler = (e) => {
+          window.removeEventListener(bridgeId, handler);
+          resolve(e.detail);
+        };
+        window.addEventListener(bridgeId, handler);
+      });
+
+      (document.head || document.documentElement).appendChild(script);
+      script.remove();
+      return await resultPromise;
+    },
+    args: [spec.adapterCode, toolName, inputArgs],
+    world: 'MAIN',
+  });
+
+  const result = results[0]?.result;
+  if (result && result.error) {
+    throw new Error(result.error);
   }
+  return result?.result;
 }
 
 async function handleWriteScript(task) {
