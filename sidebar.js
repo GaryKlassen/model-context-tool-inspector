@@ -650,7 +650,7 @@ async function handleFanToolExecution(tabId, toolDef, inputArgs) {
   const results = await chrome.scripting.executeScript({
     target: { tabId },
     func: async (adapterSource, name, argsJson) => {
-      console.debug(`[WebMCP] Fan Tool "${name}" execution started.`);
+      console.debug(`[WebMCP] Fan Tool "${name}" execution started (Isolated World).`);
       try {
         // Create a temporary scope for the adapter
         const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
@@ -664,7 +664,7 @@ async function handleFanToolExecution(tabId, toolDef, inputArgs) {
       }
     },
     args: [spec.adapterCode, toolName, inputArgs],
-    world: 'MAIN', // Use MAIN world for better page context access
+    world: 'ISOLATED', // Use ISOLATED world to bypass page CSP restrictions (e.g. unsafe-eval)
   });
 
   if (!results || results.length === 0) {
