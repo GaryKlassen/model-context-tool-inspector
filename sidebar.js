@@ -85,15 +85,10 @@ async function addFanSpecFromGitHub(url, nameFromRegistry = null) {
     let baseUrl = url.replace('github.com', 'raw.githubusercontent.com').replace('/tree/', '/');
     if (!baseUrl.endsWith('/')) baseUrl += '/';
 
-    const mcpResponse = await fetch(baseUrl + 'mcp.json');
-    if (!mcpResponse.ok) throw new Error(`Could not find mcp.json at ${baseUrl}`);
+    const mcpResponse = await fetch(baseUrl + 'webmcp.json');
+    if (!mcpResponse.ok) throw new Error(`Could not find webmcp.json at ${baseUrl}`);
     const spec = await mcpResponse.json();
 
-    const adapterResponse = await fetch(baseUrl + 'adapter.js');
-    if (!adapterResponse.ok) throw new Error(`Could not find adapter.js at ${baseUrl}`);
-    const adapterCode = await adapterResponse.text();
-
-    spec.adapterCode = adapterCode;
     spec.sourceUrl = url;
 
     const stored = await chrome.storage.local.get('fanSpecs');
@@ -191,7 +186,7 @@ fanSpecInput.onchange = async (event) => {
           throw new Error('Invalid Fan Spec: Missing metadata (name, matches, tools).');
         }
 
-        spec.sourceUrl = file.name === 'mcp.json' ? 'Local File' : file.name;
+        spec.sourceUrl = file.name === 'webmcp.json' ? 'Local File' : file.name;
 
         const stored = await chrome.storage.local.get('fanSpecs');
         const specs = stored.fanSpecs || {};
