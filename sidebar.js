@@ -305,19 +305,21 @@ async function handleToolMessage({ message, tools, url }, sender) {
       const spec = fanSpecs[specName];
       console.debug(`[WebMCP] Checking spec "${specName}" against URL`, spec.matches);
       const isMatch = spec.matches.some((pattern) => {
-        // Standard glob-to-regex: escape regex chars, then convert glob wildcards
-        const regexStr = '^' + pattern
-          .replace(/[.+^${}()|[\]\\]/g, '\\$&') // Escape all regex special chars
-          .replace(/\\\*/g, '.*')               // Convert escaped * back to .*
-          .replace(/\\\?/g, '.')                // Convert escaped ? back to .
-          + '$';
+        // More robust glob-to-regex: 
+        // 1. Escape all regex-sensitive characters EXCEPT * and ?
+        let regexStr = pattern.replace(/[-/\\^$*+?.()|[\]{}]/g, (m) => {
+          if (m === '*' || m === '?') return m; // Keep glob chars for now
+          return '\\' + m;
+        });
+
+        // 2. Convert glob wildcards to regex equivalents
+        regexStr = '^' + regexStr.replace(/\*/g, '.*').replace(/\?/g, '.') + '$';
 
         const regex = new RegExp(regexStr);
         const match = regex.test(tabUrl);
         console.debug(`  - Pattern "${pattern}" -> Regex "${regexStr}" matches? ${match}`);
         return match;
       });
-
       if (isMatch) {
         console.debug(`[WebMCP] ✅ MATCH FOUND for spec "${specName}"`);
         logPrompt(`ℹ️ Adding Fan Spec: "${spec.name}" tools to list for this page.`);
