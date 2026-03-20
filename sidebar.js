@@ -647,24 +647,50 @@ async function handleFanToolExecution(tabId, toolDef, inputArgs) {
 
   logPrompt(`⚙️ Executing Fan Tool "${toolName}" via adapter...`);
 
+  // We must avoid 'new Function' or 'eval' due to Extension CSP.
+  // Instead, we inject a script that defines the adapter and then calls the tool.
   const results = await chrome.scripting.executeScript({
     target: { tabId },
     func: async (adapterSource, name, argsJson) => {
-      console.debug(`[WebMCP] Fan Tool "${name}" execution started (Isolated World).`);
-      try {
-        // Create a temporary scope for the adapter
-        const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
-        const fn = new AsyncFunction('name', 'args', adapterSource + '\nreturn await executeTool(name, args);');
-        const result = await fn(name, JSON.parse(argsJson));
-        console.debug(`[WebMCP] Fan Tool "${name}" result:`, result);
-        return result === undefined ? { __undefined: true } : result;
-      } catch (e) {
-        console.error(`[WebMCP] Fan Tool "${name}" error:`, e);
-        return { __error: e.message, __stack: e.stack };
-      }
+      console.debug(`[WebMCP] Fan Tool "${name}" execution started.`);
+      
+      // Wrapper to inject the adapter code safely without eval()
+      const script = document.createElement('script');
+      const blob = new Blob([`
+        (async () => {
+          try {
+            ${adapterSource}
+            const result = await executeTool("${name}", ${argsJson});
+            window.dispatchEvent(new CustomEvent('webmcp-fan-result', { 
+              detail: { result: result === undefined ? { __undefined: true } : result } 
+            }));
+          } catch (e) {
+            window.dispatchEvent(new CustomEvent('webmcp-fan-result', { 
+              detail: { error: e.message, stack: e.stack } 
+            }));
+          }
+        })();
+      `], { type: 'text/javascript' });
+      
+      const url = URL.createObjectURL(blob);
+      
+      const resultPromise = new Promise((resolve) => {
+        const handler = (e) => {
+          window.removeEventListener('webmcp-fan-result', handler);
+          URL.revokeObjectURL(url);
+          resolve(e.detail);
+        };
+        window.addEventListener('webmcp-fan-result', handler);
+      });
+
+      script.src = url;
+      (document.head || document.documentElement).appendChild(script);
+      script.remove();
+
+      return await resultPromise;
     },
     args: [spec.adapterCode, toolName, inputArgs],
-    world: 'ISOLATED', // Use ISOLATED world to bypass page CSP restrictions (e.g. unsafe-eval)
+    world: 'MAIN', // This strategy works best in MAIN world to interact with page JS
   });
 
   if (!results || results.length === 0) {
@@ -673,8 +699,9 @@ async function handleFanToolExecution(tabId, toolDef, inputArgs) {
 
   const result = results[0].result;
   if (result && typeof result === 'object') {
-    if (result.__error) throw new Error(`Fan Tool Adapter Error: ${result.__error}`);
+    if (result.error) throw new Error(`Fan Tool Adapter Error: ${result.error}`);
     if (result.__undefined) return 'null (undefined)';
+    return result.result;
   }
 
   return result;
