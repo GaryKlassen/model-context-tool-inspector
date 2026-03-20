@@ -316,46 +316,37 @@ function getLiveConfig(currentTools, scriptToolEnabled, getFormattedDate) {
     `Today's date is: ${getFormattedDate()}`,
   ];
 
-  // Map function declarations to their own tool entry
-  const tools = (currentTools || []).map((tool) => {
+  const functionDeclarations = (currentTools || []).map((tool) => {
     return {
-      functionDeclarations: [{
-        name: tool.name,
-        description: tool.description,
-        behavior: 'NON_BLOCKING',
-        parametersJsonSchema: tool.inputSchema ? JSON.parse(tool.inputSchema) : { type: 'object', properties: {} },
-      }]
+      name: tool.name,
+      description: tool.description,
+      parametersJsonSchema: tool.inputSchema ? JSON.parse(tool.inputSchema) : { type: 'object', properties: {} },
     };
   });
 
   if (scriptToolEnabled) {
-    tools.push({
-      functionDeclarations: [
-        {
-          name: 'write_script',
-          description:
-            'Write a robust JavaScript automation script to solve complex tasks on the current page. ' +
-            'This is the BEST tool for multi-step goals, state-based logic, or when you need to ' +
-            '\'solve\', \'automate\', \'scan\', \'loop\', or \'retry until\' a condition is met. ' +
-            'Use it to sequence multiple tool calls into an intelligent algorithm instead of ' +
-            'calling tools one-by-one.',
-          behavior: 'NON_BLOCKING',
-          parametersJsonSchema: {
-            type: 'object',
-            properties: {
-              task: {
-                type: 'string',
-                description:
-                  'A detailed description of the automation task to perform, including the ' +
-                  'end goal and any specific conditions to check.',
-              },
-            },
-            required: ['task'],
+    functionDeclarations.push({
+      name: 'write_script',
+      description:
+        'Write a robust JavaScript automation script to solve complex tasks on the current page. ' +
+        'This is the BEST tool for multi-step goals, state-based logic, or when you need to ' +
+        '\'solve\', \'automate\', \'scan\', \'loop\', or \'retry until\' a condition is met. ' +
+        'Use it to sequence multiple tool calls into an intelligent algorithm instead of ' +
+        'calling tools one-by-one.',
+      parametersJsonSchema: {
+        type: 'object',
+        properties: {
+          task: {
+            type: 'string',
+            description:
+              'A detailed description of the automation task to perform, including the ' +
+              'end goal and any specific conditions to check.',
           },
         },
-      ],
+        required: ['task'],
+      },
     });
   }
 
-  return { systemInstruction, tools };
+  return { systemInstruction, tools: [{ functionDeclarations }] };
 }
