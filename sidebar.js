@@ -645,63 +645,38 @@ async function handleFanToolExecution(tabId, toolDef, inputArgs) {
     throw new Error(`Adapter code not found for Fan Spec: "${specName}"`);
   }
 
-  logPrompt(`⚙️ Executing Fan Tool "${toolName}" via adapter (Main World)...`);
+  logPrompt(`⚙️ Executing Fan Tool "${toolName}" via adapter...`);
 
   const results = await chrome.scripting.executeScript({
     target: { tabId },
     func: async (adapterSource, name, argsJson) => {
-      // We wrap the entire execution in a scoped IIFE that we inject into the page
-      // This is necessary because chrome.scripting.executeScript itself can't run dynamic code strings easily
-      // But we can create a temporary function that DOES.
-      
-      const bridgeId = `webmcp-fan-${Math.random().toString(36).substr(2, 9)}`;
-      const script = document.createElement('script');
-      script.textContent = `
-        (async () => {
-          try {
-            // Define adapter in a local scope
-            const adapter = (() => {
-              ${adapterSource}
-              return { executeTool: typeof executeTool !== 'undefined' ? executeTool : null };
-            })();
-
-            if (typeof adapter.executeTool !== 'function') {
-              throw new Error('Fan Spec adapter logic did not define an executeTool function.');
-            }
-
-            const result = await adapter.executeTool("${name}", ${argsJson});
-            window.dispatchEvent(new CustomEvent("${bridgeId}", { 
-              detail: { result: result === undefined ? null : result } 
-            }));
-          } catch (e) {
-            window.dispatchEvent(new CustomEvent("${bridgeId}", { 
-              detail: { error: e.message } 
-            }));
-          }
-        })();
-      `;
-
-      const resultPromise = new Promise((resolve) => {
-        const handler = (e) => {
-          window.removeEventListener(bridgeId, handler);
-          resolve(e.detail);
-        };
-        window.addEventListener(bridgeId, handler);
-      });
-
-      (document.head || document.documentElement).appendChild(script);
-      script.remove();
-      return await resultPromise;
+      console.debug(`[WebMCP] Fan Tool "${name}" execution started.`);
+      try {
+        // Create a temporary scope for the adapter
+        const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
+        const fn = new AsyncFunction('name', 'args', adapterSource + '\nreturn await executeTool(name, args);');
+        const result = await fn(name, JSON.parse(argsJson));
+        console.debug(`[WebMCP] Fan Tool "${name}" result:`, result);
+        return result === undefined ? null : result;
+      } catch (e) {
+        console.error(`[WebMCP] Fan Tool "${name}" error:`, e);
+        return { error: e.message };
+      }
     },
     args: [spec.adapterCode, toolName, inputArgs],
     world: 'MAIN',
   });
 
-  const result = results[0]?.result;
-  if (result && result.error) {
-    throw new Error(result.error);
+  if (!results || results.length === 0) {
+    throw new Error('Fan Tool execution returned no results (script injection failed).');
   }
-  return result?.result;
+
+  const result = results[0].result;
+  if (result && typeof result === 'object' && result.error) {
+    throw new Error(`Fan Tool Adapter Error: ${result.error}`);
+  }
+
+  return result;
 }
 
 async function handleWriteScript(task) {
