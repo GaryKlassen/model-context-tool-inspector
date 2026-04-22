@@ -4,7 +4,7 @@
  */
 
 import { GoogleGenAI } from './js-genai.js';
-import { initGeminiLive } from './gemini-live.js';
+import { initGeminiLive, updateLiveTools } from './gemini-live.js';
 
 const statusDiv = document.getElementById('status');
 const tbody = document.getElementById('tableBody');
@@ -105,7 +105,10 @@ chrome.runtime.onMessage.addListener(async ({ message, tools, url }, sender) => 
   });
   updateDefaultValueForInputArgs();
 
-  if (haveNewTools) suggestUserPrompt();
+  if (haveNewTools) {
+    suggestUserPrompt();
+    updateLiveTools();
+  }
 });
 
 tbody.ondblclick = () => {

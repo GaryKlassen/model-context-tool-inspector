@@ -181,27 +181,28 @@ function createBlob(data) {
 let liveSession = null;
 let audioScheduler = null;
 let micCapture = null;
+let lastStartParams = null;
+let isReconnecting = false;
 
-export async function initGeminiLive({
-  micBtn,
-  apiKeyBtn,
-  getTools,
-  executeTool,
-  logPrompt,
-  getFormattedDate,
-  addToTrace,
-}) {
-  micBtn.onclick = async () => {
+export async function initGeminiLive(params) {
+  params.micBtn.onclick = async () => {
     if (!localStorage.apiKey) {
-      apiKeyBtn.click();
+      params.apiKeyBtn.click();
       return;
     }
     if (liveSession) {
-      stopLive(micBtn);
+      stopLive(params.micBtn);
     } else {
-      await startLive({ micBtn, getTools, executeTool, logPrompt, getFormattedDate, addToTrace });
+      lastStartParams = params;
+      await startLive(params);
     }
   };
+}
+
+export async function updateLiveTools() {
+  if (liveSession && lastStartParams) {
+    await startLive(lastStartParams);
+  }
 }
 
 async function startLive({
@@ -214,28 +215,42 @@ async function startLive({
 }) {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
 
-  audioScheduler = new AudioScheduler();
-  audioScheduler.onSpeaking = (speaking) => micBtn.classList.toggle('speaking', speaking);
-
-  micCapture = new MicCapture(logPrompt);
-  micCapture.onListening = (listening) => micBtn.classList.toggle('listening', listening);
-
-  try {
-    await micCapture.start();
-  } catch (micErr) {
-    console.error('Initial mic start failed:', micErr);
-    return;
+  if (!audioScheduler) {
+    audioScheduler = new AudioScheduler();
+    audioScheduler.onSpeaking = (speaking) => micBtn.classList.toggle('speaking', speaking);
   }
 
-  micBtn.classList.add('active');
-  micBtn.querySelector('.mic-icon').style.display = 'none';
-  micBtn.querySelector('.stop-icon').style.display = 'block';
+  if (!micCapture) {
+    micCapture = new MicCapture(logPrompt);
+    micCapture.onListening = (listening) => micBtn.classList.toggle('listening', listening);
+  }
+
+  if (!micBtn.classList.contains('active')) {
+    try {
+      await micCapture.start();
+    } catch (micErr) {
+      console.error('Initial mic start failed:', micErr);
+      return;
+    }
+
+    micBtn.classList.add('active');
+    micBtn.querySelector('.mic-icon').style.display = 'none';
+    micBtn.querySelector('.stop-icon').style.display = 'block';
+  }
 
   const config = getLiveConfig(getTools(), getFormattedDate);
   const liveGenAI = new GoogleGenAI({
     apiKey: localStorage.apiKey,
     httpOptions: { apiVersion: 'v1alpha' },
   });
+
+  if (liveSession) {
+    isReconnecting = true;
+    try {
+      liveSession.close();
+    } catch {}
+    liveSession = null;
+  }
 
   try {
     liveSession = await liveGenAI.live.connect({
@@ -253,19 +268,24 @@ async function startLive({
       },
       callbacks: {
         onopen: () => {
+          isReconnecting = false;
           logPrompt(`Live session connected.`);
           micCapture.onAudioData = (data) => {
             if (liveSession) liveSession.sendRealtimeInput({ media: createBlob(data) });
           };
         },
         onclose: (e) => {
-          logPrompt(`Live session closed. Reason: "${e.reason || 'No reason provided'}"`);
-          stopLive(micBtn);
+          if (!isReconnecting) {
+            logPrompt(`Live session closed. Reason: "${e.reason || 'No reason provided'}"`);
+            stopLive(micBtn);
+          }
         },
         onerror: (error) => {
-          addToTrace({ error });
-          logPrompt(`Live session error: ${error.message || error}`);
-          stopLive(micBtn);
+          if (!isReconnecting) {
+            addToTrace({ error });
+            logPrompt(`Live session error: ${error.message || error}`);
+            stopLive(micBtn);
+          }
         },
         onmessage: (message) => {
           addToTrace({ userPrompt: { message, config } });
@@ -321,11 +341,14 @@ async function startLive({
 }
 
 function stopLive(micBtn) {
+  lastStartParams = null;
+  isReconnecting = false;
   if (liveSession) {
-    try {
-      liveSession.close();
-    } catch {}
+    const sessionToClose = liveSession;
     liveSession = null;
+    try {
+      sessionToClose.close();
+    } catch {}
   }
   if (micCapture) {
     micCapture.stop();
