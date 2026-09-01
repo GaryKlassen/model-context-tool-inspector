@@ -21,7 +21,7 @@ We are committed to respecting your privacy. The Extension is designed as a deve
 
 The Extension processes data locally within your browser to provide its developer inspection capabilities:
 
-- **WebMCP Tool Metadata:** The content script inspects the active web page's `document.modelContext` API to read registered tool names, descriptions, input schemas, frame IDs, and tool annotations (such as `readOnlyHint` and `untrustedContentHint`). This information is displayed in the extension's side panel for inspection.
+- **WebMCP Tool Metadata:** The content script inspects the active web page's `document.modelContext` API to read registered tool names, descriptions, input schemas, frame IDs, and tool annotations (such as `readOnlyHint`, `untrustedContentHint`, and `consequentialHint`). This information is displayed in the extension's side panel for inspection.
 - **Tool Execution Data:** When you manually execute a tool or trigger tool execution via the AI assistant, the input parameters and execution results are passed directly between the extension and the web page/frame.
 - **Local Storage (`localStorage`):** The following configuration settings are stored locally on your machine within the browser's extension storage:
   - **Gemini API Key:** If you provide a Google Gemini API key to enable AI features, it is stored locally in `localStorage.apiKey`. It is never transmitted anywhere other than directly to Google's Gemini API endpoints.
