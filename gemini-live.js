@@ -5,8 +5,8 @@
 
 import { GoogleGenAI } from './js-genai.js';
 
-if (!localStorage.liveModel || localStorage.liveModel.includes('2.5')) {
-  localStorage.liveModel = 'gemini-3.1-flash-live';
+if (!localStorage.liveModel || localStorage.liveModel.includes('3.1')) {
+  localStorage.liveModel = 'gemini-2.5-flash-native-audio-preview-12-2025';
 }
 
 class AudioScheduler {
