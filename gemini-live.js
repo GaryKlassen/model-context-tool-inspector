@@ -168,14 +168,8 @@ function decode(base64) {
   return bytes;
 }
 
-function encode(bytes) {
-  let binary = '';
-  for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
-  return btoa(binary);
-}
-
-function createBlob(data) {
-  return { data: encode(new Uint8Array(data)), mimeType: 'audio/pcm;rate=16000' };
+function createBlob(base64) {
+  return { data: base64, mimeType: 'audio/pcm;rate=16000' };
 }
 
 let liveSession = null;
@@ -278,11 +272,9 @@ async function startLive({
         contextWindowCompression: { slidingWindow: {} },
         proactivity: { proactiveAudio: true },
         inputAudioTranscription: {},
-        outputAudioTranscription: {},
         speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Puck' } } },
         realtimeInputConfig: { activityHandling: 'START_OF_ACTIVITY_INTERRUPTS' },
         tools: config.tools,
-        toolConfig: { functionCallingConfig: { mode: 'VALIDATED' } },
       },
       callbacks: {
         onopen: () => {

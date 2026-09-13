@@ -36,13 +36,18 @@ async function startMic() {
         const float32Data = event.data.data;
         const int16Data = new Int16Array(float32Data.length);
         for (let i = 0; i < float32Data.length; i++) {
-          // Clamp and map Float32 to Int16
           const s = Math.max(-1, Math.min(1, float32Data[i]));
           int16Data[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
         }
+        // Encode Int16 directly to Base64 to avoid transferring 4096-element JS arrays across IPC
+        const uint8 = new Uint8Array(int16Data.buffer);
+        let binary = '';
+        for (let i = 0; i < uint8.length; i++) binary += String.fromCharCode(uint8[i]);
+        const base64 = btoa(binary);
+
         chrome.runtime.sendMessage({
           type: 'audio-data',
-          data: Array.from(new Uint8Array(int16Data.buffer)),
+          data: base64,
         });
       }
     };
