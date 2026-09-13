@@ -294,17 +294,32 @@ async function startLive({
             (async () => {
               const responses = [];
               for (const fc of fcs) {
-                logPrompt(`AI calling tool "${fc.name}"`);
+                let toolName = fc.name;
+                let frameId = 0;
+                if (toolName.startsWith('_')) {
+                  try {
+                    const parts = toolName.split(/_(.*)/s)[1].split(/_(.*)/s);
+                    frameId = parseInt(parts[0]) || 0;
+                    toolName = parts[1] || toolName;
+                  } catch {}
+                } else {
+                  const tool = getTools()?.find((t) => t.name === toolName);
+                  if (tool?.frameId !== undefined) {
+                    frameId = tool.frameId;
+                  }
+                }
+                const inputArgs = JSON.stringify(fc.args);
+                logPrompt(`AI calling tool "${toolName}" with ${inputArgs}`);
                 try {
-                  const result = await executeTool(tab.id, fc.name, JSON.stringify(fc.args));
-                  logPrompt(`Tool "${fc.name}" result: ${result}`);
+                  const result = await executeTool(tab.id, toolName, inputArgs, frameId);
+                  logPrompt(`Tool "${toolName}" result: ${result}`);
                   responses.push({
                     id: fc.id,
                     name: fc.name,
                     response: { result: result === undefined ? null : result },
                   });
                 } catch (e) {
-                  logPrompt(`⚠️ Error executing tool "${fc.name}": ${e.message}`);
+                  logPrompt(`⚠️ Error executing tool "${toolName}": ${e.message}`);
                   responses.push({ id: fc.id, name: fc.name, response: { error: e.message } });
                 }
               }
@@ -365,15 +380,17 @@ function stopLive(micBtn) {
 
 function getLiveConfig(currentTools, getFormattedDate) {
   const systemInstruction = [
-    'You are embedded in a browser tab.',
-    'User prompts refer to the current tab.',
-    'CRITICAL: Use tools for page content or interaction immediately.',
+    'You are an assistant embedded in a browser tab.',
+    'User prompts typically refer to the current tab unless stated otherwise.',
+    'Use the provided tools to query page content when you need it.',
     `Today's date is: ${getFormattedDate()}`,
+    'CRITICAL RULE: Whenever the user provides a relative date (e.g., "next Monday", "tomorrow", "in 3 days"),  you must calculate the exact calendar date based on today\'s date.',
+    'CRITICAL RULE: Do not try to use other tools than the available ones.',
   ];
 
   const functionDeclarations = (currentTools || []).map((tool) => {
     return {
-      name: tool.name,
+      name: `_${tool.frameId}_${tool.name}`,
       description: tool.description,
       parametersJsonSchema: tool.inputSchema
         ? JSON.parse(tool.inputSchema)
