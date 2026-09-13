@@ -289,7 +289,7 @@ async function startLive({
           isReconnecting = false;
           logPrompt(`Live session connected.`);
           micCapture.onAudioData = (data) => {
-            if (liveSession) liveSession.sendRealtimeInput({ media: createBlob(data) });
+            if (liveSession) liveSession.sendRealtimeInput({ audio: createBlob(data) });
           };
         },
         onclose: (e) => {
