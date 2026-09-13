@@ -223,9 +223,9 @@ export async function updateLiveTools() {
 async function startLive({
   micBtn,
   getTools,
+  getConfig,
   executeTool,
   logPrompt,
-  getFormattedDate,
   addToTrace,
 }) {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -256,7 +256,7 @@ async function startLive({
     micBtn.querySelector('.stop-icon').style.display = 'block';
   }
 
-  const config = getLiveConfig(getTools(), getFormattedDate);
+  const config = getConfig();
   const liveGenAI = new GoogleGenAI({
     apiKey: localStorage.apiKey,
     httpOptions: { apiVersion: 'v1alpha' },
@@ -401,27 +401,4 @@ function stopLive(micBtn) {
   micBtn.classList.remove('active', 'listening', 'speaking');
   micBtn.querySelector('.mic-icon').style.display = 'block';
   micBtn.querySelector('.stop-icon').style.display = 'none';
-}
-
-function getLiveConfig(currentTools, getFormattedDate) {
-  const systemInstruction = [
-    'You are an assistant embedded in a browser tab.',
-    'User prompts typically refer to the current tab unless stated otherwise.',
-    'Use the provided tools to query page content when you need it.',
-    `Today's date is: ${getFormattedDate()}`,
-    'CRITICAL RULE: Whenever the user provides a relative date (e.g., "next Monday", "tomorrow", "in 3 days"),  you must calculate the exact calendar date based on today\'s date.',
-    'CRITICAL RULE: Do not try to use other tools than the available ones.',
-  ];
-
-  const functionDeclarations = (currentTools || []).map((tool) => {
-    return {
-      name: `_${tool.frameId}_${tool.name}`,
-      description: tool.description,
-      parametersJsonSchema: tool.inputSchema
-        ? JSON.parse(tool.inputSchema)
-        : { type: 'object', properties: {} },
-    };
-  });
-
-  return { systemInstruction, tools: [{ functionDeclarations }] };
 }
