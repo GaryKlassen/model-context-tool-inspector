@@ -5,9 +5,7 @@
 
 import { GoogleGenAI } from './js-genai.js';
 
-if (!localStorage.liveModel || localStorage.liveModel.includes('2.5') || localStorage.liveModel === 'gemini-3.1-flash-live') {
-  localStorage.liveModel = 'gemini-3.1-flash-live-preview';
-}
+const LIVE_MODEL = 'gemini-3.1-flash-live-preview';
 
 class AudioScheduler {
   constructor() {
@@ -272,7 +270,7 @@ async function startLive({
 
   try {
     liveSession = await liveGenAI.live.connect({
-      model: localStorage.liveModel,
+      model: LIVE_MODEL,
       config: {
         systemInstruction: { parts: [{ text: config.systemInstruction.join('\n') }] },
         responseModalities: ['AUDIO'],
