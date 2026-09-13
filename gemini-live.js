@@ -330,20 +330,33 @@ async function startLive({
                 logPrompt(`AI calling tool "${toolName}" with ${inputArgs}`);
                 try {
                   const result = await executeTool(tab.id, toolName, inputArgs, frameId);
-                  logPrompt(`Tool "${toolName}" result: ${result}`);
                   responses.push({
                     id: fc.id,
                     name: fc.name,
                     response: { result: result === undefined ? null : result },
                   });
+                  if (liveSession) {
+                    liveSession.sendToolResponse({ functionResponses: [{
+                      id: fc.id,
+                      name: fc.name,
+                      response: { result: result === undefined ? null : result },
+                    }] });
+                  }
+                  logPrompt(`Tool "${toolName}" result: ${result}`);
                 } catch (e) {
-                  logPrompt(`⚠️ Error executing tool "${toolName}": ${e.message}`);
                   responses.push({ id: fc.id, name: fc.name, response: { error: e.message } });
+                  if (liveSession) {
+                    liveSession.sendToolResponse({ functionResponses: [{
+                      id: fc.id,
+                      name: fc.name,
+                      response: { error: e.message },
+                    }] });
+                  }
+                  logPrompt(`⚠️ Error executing tool "${toolName}": ${e.message}`);
                 }
               }
-              if (responses.length > 0 && liveSession) {
+              if (responses.length > 0) {
                 addToTrace({ userPrompt: { message: responses, config } });
-                liveSession.sendToolResponse({ functionResponses: responses });
               }
             })();
           }
