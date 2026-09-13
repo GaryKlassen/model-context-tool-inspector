@@ -5,6 +5,7 @@
 
 import { GoogleGenAI } from './js-genai.js';
 import { initGeminiLive, updateLiveTools } from './gemini-live.js';
+import { getAllFrameOrigins } from './utils.js';
 
 const statusDiv = document.getElementById('status');
 const tbody = document.getElementById('tableBody');
@@ -24,12 +25,14 @@ const apiKeyBtn = document.getElementById('apiKeyBtn');
 const promptResults = document.getElementById('promptResults');
 const advancedSection = document.getElementById('advancedSection');
 const micBtn = document.getElementById('micBtn');
+const suggestUserPromptCheckbox = document.getElementById('suggestUserPromptCheckbox');
 
-// Inject content script first.
+// First, request list of tools from content script living in top-level frame.
 (async () => {
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    await chrome.tabs.sendMessage(tab.id, { action: 'LIST_TOOLS' });
+    const fromOrigins = await getAllFrameOrigins(tab.id);
+    await chrome.tabs.sendMessage(tab.id, { action: 'LIST_TOOLS', fromOrigins }, { frameId: 0 });
   } catch (error) {
     const statusDiv = document.getElementById('status');
     statusDiv.textContent = error;
@@ -44,7 +47,10 @@ let userPromptPendingId = 0;
 let lastSuggestedUserPrompt = '';
 
 // Listen for the results coming back from content.js
-chrome.runtime.onMessage.addListener(async ({ message, tools, url }, sender) => {
+chrome.runtime.onMessage.addListener(async ({ message, tools, url, type }, sender) => {
+  // Internal signals (e.g. contentScriptReady) are handled elsewhere.
+  if (type) return;
+  if (sender.frameId && sender.frameId !== 0) return;
   if (!message && !tools) return;
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (sender.tab && sender.tab.id !== tab.id) return;
@@ -77,7 +83,15 @@ chrome.runtime.onMessage.addListener(async ({ message, tools, url }, sender) => 
   executeBtn.disabled = false;
   copyToClipboard.hidden = false;
 
-  const keys = Object.keys(tools[0]);
+  const KEYS = [
+    'description',
+    'inputSchema',
+    'readOnlyHint',
+    'untrustedContentHint',
+    'consequentialHint',
+    'name',
+  ];
+  const keys = KEYS.filter((key) => tools.some((tool) => key in tool));
   keys.forEach((key) => {
     const th = document.createElement('th');
     th.textContent = key;
@@ -88,8 +102,10 @@ chrome.runtime.onMessage.addListener(async ({ message, tools, url }, sender) => 
     const row = document.createElement('tr');
     keys.forEach((key) => {
       const td = document.createElement('td');
+      const pre = document.createElement('pre');
       try {
-        td.innerHTML = `<pre>${JSON.stringify(JSON.parse(item[key]), '', '  ')}</pre>`;
+        pre.textContent = JSON.stringify(JSON.parse(item[key]), '', '  ');
+        td.appendChild(pre);
       } catch (error) {
         td.textContent = item[key];
       }
@@ -98,9 +114,10 @@ chrome.runtime.onMessage.addListener(async ({ message, tools, url }, sender) => 
     tbody.appendChild(row);
 
     const option = document.createElement('option');
-    option.textContent = `"${item.name}"`;
+    option.textContent = `"${item.name}"${item.frameId !== 0 ? ` (${item.frameId})` : ''}`;
     option.value = item.name;
-    option.dataset.inputSchema = item.inputSchema;
+    option.dataset.inputSchema = item.inputSchema || '{}';
+    option.dataset.frameId = item.frameId;
     toolNames.appendChild(option);
   });
   updateDefaultValueForInputArgs();
@@ -120,8 +137,8 @@ copyAsScriptToolConfig.onclick = async () => {
     .map((tool) => {
       return `\
 script_tools {
-  name: "${tool.name}"
-  description: "${tool.description}"
+  name: ${JSON.stringify(tool.name)}
+  description: ${JSON.stringify(tool.description || '')}
   input_schema: ${JSON.stringify(tool.inputSchema || { type: 'object', properties: {} })}
 }`;
     })
@@ -146,20 +163,26 @@ copyAsJSON.onclick = async () => {
 
 let genAI, chat;
 
-const envModulePromise = import('./.env.json', { with: { type: 'json' } });
-
 async function initGenAI() {
   let env;
   try {
     // Try load .env.json if present.
-    env = (await envModulePromise).default;
+    env = (await import('./.env.json', { with: { type: 'json' } })).default;
   } catch {}
   if (env?.apiKey) localStorage.apiKey ??= env.apiKey;
-  localStorage.model ??= env?.model || 'gemini-2.5-flash';
+  if (localStorage.model === 'gemini-2.5-flash') {
+    localStorage.model = 'gemini-3-flash-preview';
+  }
+  if (localStorage.model === 'gemini-3.1-flash-lite-preview') {
+    localStorage.model = 'gemini-3.1-flash-lite';
+  }
+  localStorage.model ??= env?.model || 'gemini-3.6-flash';
   genAI = localStorage.apiKey ? new GoogleGenAI({ apiKey: localStorage.apiKey }) : undefined;
   promptBtn.disabled = !localStorage.apiKey;
   resetBtn.disabled = !localStorage.apiKey;
   apiKeyBtn.textContent = localStorage.apiKey ? 'Update Gemini API key' : 'Set Gemini API key';
+
+  suggestUserPromptCheckbox.checked = localStorage.suggestUserPrompt !== 'false';
 }
 await initGenAI();
 
@@ -172,7 +195,14 @@ document.querySelectorAll('input[name="model"]').forEach((radio) => {
   };
 });
 
+suggestUserPromptCheckbox.onchange = () => {
+  localStorage.suggestUserPrompt = suggestUserPromptCheckbox.checked;
+  if (localStorage.suggestUserPrompt) suggestUserPrompt();
+  advancedSection.hidePopover();
+};
+
 async function suggestUserPrompt() {
+  if (localStorage.suggestUserPrompt === 'false') return;
   if (currentTools.length == 0 || !genAI || userPromptText.value !== lastSuggestedUserPrompt)
     return;
   const userPromptId = ++userPromptPendingId;
@@ -249,24 +279,22 @@ async function promptAI() {
       finalResponseGiven = true;
     } else {
       const toolResponses = [];
-      for (const { name, args } of functionCalls) {
+      for (const { name: toolName, args } of functionCalls) {
+        let [frameId, name] = toolName.split(/_(.*)/s)[1].split(/_(.*)/s);
+        frameId = parseInt(frameId);
         const inputArgs = JSON.stringify(args);
         logPrompt(`AI calling tool "${name}" with ${inputArgs}`);
         try {
-          const result = await executeTool(tab.id, name, inputArgs);
-          toolResponses.push({ functionResponse: { name, response: { result } } });
+          const result = await executeTool(tab.id, name, inputArgs, frameId);
+          toolResponses.push({ functionResponse: { name: toolName, response: { result } } });
           logPrompt(`Tool "${name}" result: ${result}`);
         } catch (e) {
           logPrompt(`⚠️ Error executing tool "${name}": ${e.message}`);
           toolResponses.push({
-            functionResponse: { name, response: { error: e.message } },
+            functionResponse: { name: toolName, response: { error: e.message } },
           });
         }
       }
-
-      // FIXME: New WebMCP tools may not be discovered if there's a navigation.
-      // An articial timeout is introduced for mitigation but it's not robust enough.
-      await new Promise((r) => setTimeout(r, 500));
 
       const sendMessageParams = { message: toolResponses, config: getConfig() };
       trace.push({ userPrompt: sendMessageParams });
@@ -302,28 +330,70 @@ executeBtn.onclick = async () => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   const name = toolNames.selectedOptions[0].value;
   const inputArgs = inputArgsText.value;
-  toolResults.textContent = await executeTool(tab.id, name, inputArgs).catch(
+  const frameId = parseInt(toolNames.selectedOptions[0].dataset.frameId);
+  toolResults.textContent = await executeTool(tab.id, name, inputArgs, frameId).catch(
     (error) => `⚠️ Error: "${error}"`,
   );
 };
 
-async function executeTool(tabId, name, inputArgs) {
-  try {
-    const result = await chrome.tabs.sendMessage(tabId, {
-      action: 'EXECUTE_TOOL',
-      name,
-      inputArgs,
-    });
-    if (result !== null) return result;
-  } catch (error) {
-    if (!error.message.includes('message channel is closed')) throw error;
-  }
-  // A navigation was triggered. The result will be on the next document.
-  // TODO: Handle case where a new tab is opened.
-  await waitForPageLoad(tabId);
-  return await chrome.tabs.sendMessage(tabId, {
-    action: 'GET_CROSS_DOCUMENT_SCRIPT_TOOL_RESULT',
+async function executeTool(tabId, name, inputArgs, frameId) {
+  let toolsReady;
+  const toolsPromise = new Promise((resolve) => {
+    toolsReady = resolve;
   });
+
+  let targetTabId = tabId;
+  let contentScriptReadyResolve;
+  const contentScriptReadyPromise = new Promise((r) => { contentScriptReadyResolve = r; });
+
+  const listener = (msg, sender) => {
+    if (msg.type === 'contentScriptReady' && sender.tab) {
+      if (sender.tab.id === tabId || sender.tab.openerTabId === tabId) {
+        targetTabId = sender.tab.id;
+        contentScriptReadyResolve();
+      }
+    }
+    if (msg.tools && sender.tab?.id === targetTabId) {
+      toolsReady();
+    }
+  };
+  chrome.runtime.onMessage.addListener(listener);
+
+  try {
+    try {
+      const result = await chrome.tabs.sendMessage(
+        tabId,
+        { action: 'EXECUTE_TOOL', name, inputArgs },
+        { frameId },
+      );
+      if (result !== null) return result;
+    } catch (error) {
+      if (!/message channel (is )?closed/.test(error.message)) throw error;
+    }
+
+    // A navigation was triggered. The result will be on the next document,
+    // which may live in a new tab if the tool opened one.
+    await Promise.race([
+      contentScriptReadyPromise,
+      new Promise((r) => setTimeout(r, 2000)),
+    ]);
+
+    await Promise.race([
+      toolsPromise,
+      new Promise((r) => setTimeout(r, 2000)),
+    ]);
+
+    await waitForPageLoad(targetTabId);
+
+    return await chrome.tabs.sendMessage(
+      targetTabId,
+      { action: 'GET_CROSS_DOCUMENT_SCRIPT_TOOL_RESULT' },
+      // The original frameId only makes sense in the original tab.
+      { frameId: targetTabId === tabId ? frameId : 0 },
+    );
+  } finally {
+    chrome.runtime.onMessage.removeListener(listener);
+  }
 }
 
 toolNames.onchange = updateDefaultValueForInputArgs;
@@ -366,14 +436,15 @@ function getConfig() {
   const systemInstruction = [
     'You are an assistant embedded in a browser tab.',
     'User prompts typically refer to the current tab unless stated otherwise.',
-    'Use your tools to query page content when you need it.',
+    'Use the provided tools to query page content when you need it.',
     `Today's date is: ${getFormattedDate()}`,
     'CRITICAL RULE: Whenever the user provides a relative date (e.g., "next Monday", "tomorrow", "in 3 days"),  you must calculate the exact calendar date based on today\'s date.',
+    'CRITICAL RULE: Do not try to use other tools than the available ones.',
   ];
 
   const functionDeclarations = currentTools.map((tool) => {
     return {
-      name: tool.name,
+      name: `_${tool.frameId}_${tool.name}`,
       description: tool.description,
       parametersJsonSchema: tool.inputSchema
         ? JSON.parse(tool.inputSchema)
@@ -494,13 +565,24 @@ function generateTemplateFromSchema(schema) {
 
 function waitForPageLoad(tabId) {
   return new Promise((resolve) => {
-    const listener = (updatedTabId, changeInfo) => {
-      if (updatedTabId === tabId && changeInfo.status === 'complete') {
-        chrome.tabs.onUpdated.removeListener(listener);
-        resolve();
-      }
+    let timeoutId;
+    const done = () => {
+      clearTimeout(timeoutId);
+      chrome.tabs.onUpdated.removeListener(listener);
+      resolve();
     };
+    const listener = (updatedTabId, changeInfo) => {
+      if (updatedTabId === tabId && changeInfo.status === 'complete') done();
+    };
+
+    timeoutId = setTimeout(done, 5000); // resolve rather than reject to avoid crashing the AI loop
     chrome.tabs.onUpdated.addListener(listener);
+
+    // The tab may already be done loading, or gone; don't wait on the
+    // timeout for those.
+    chrome.tabs.get(tabId).then((tab) => {
+      if (tab.status === 'complete') done();
+    }).catch(done);
   });
 }
 

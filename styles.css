@@ -46,9 +46,10 @@ button:hover {
   padding: 0 4px;
   border-radius: 4px;
   white-space: pre-line;
-  max-height: 200px;
-  overflow-y: scroll;
+  max-height: 400px;
+  overflow-y: auto;
   margin-bottom: 20px;
+  resize:vertical
 }
 
 #status {
@@ -390,7 +391,7 @@ dialog::backdrop {
   background-color: #f3f4f6;
 }
 
-.model-option input[type='radio'] {
+.model-option input {
   width: auto;
 }
 
@@ -506,8 +507,7 @@ dialog::backdrop {
 
   #promptResults,
   #toolResults {
-    background: #000;
-    border: 1px solid #333;
+    background-color: #232323;
   }
 
   #status {
@@ -517,7 +517,8 @@ dialog::backdrop {
 
   #micBtn,
   .icon-btn {
-    color: #bdc1c6;
+    color: #d4d4d4;
+    font-weight: bold;
   }
 
   #micBtn:hover,

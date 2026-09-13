@@ -50,7 +50,7 @@
               </svg>
             </button>
           </label>
-          <button id="advancedBtn" title="Advanced features" popovertarget="advancedSection" class="icon-btn">⋮</button>
+          <button id="advancedBtn" title="Advanced features" popovertarget="advancedSection" class="icon-btn">︙</button>
         </div>
         <textarea id="userPromptText"></textarea>
       </div>
@@ -58,12 +58,29 @@
       <dialog id="advancedSection" popover autofocus>
         <div class="menu-label">Gemini Model</div>
         <label class="model-option">
-          <input type="radio" name="model" value="gemini-2.5-flash">
-          <span>Gemini 2.5 Flash</span>
+          <input type="radio" name="model" value="gemini-3-flash-preview">
+          <span>Gemini 3 Flash Preview</span>
         </label>
         <label class="model-option">
-          <input type="radio" name="model" value="gemini-3.1-flash-lite-preview">
-          <span>Gemini 3.1 Flash-Lite Preview</span>
+          <input type="radio" name="model" value="gemini-3.1-flash-lite">
+          <span>Gemini 3.1 Flash-Lite</span>
+        </label>
+        <label class="model-option">
+          <input type="radio" name="model" value="gemini-3.5-flash-lite">
+          <span>Gemini 3.5 Flash-Lite</span>
+        </label>
+        <label class="model-option">
+          <input type="radio" name="model" value="gemini-3.5-flash">
+          <span>Gemini 3.5 Flash</span>
+        </label>
+        <label class="model-option">
+          <input type="radio" name="model" value="gemini-3.6-flash">
+          <span>Gemini 3.6 Flash</span>
+        </label>
+        <div class="menu-label">Advanced Options</div>
+        <label class="model-option">
+          <input type="checkbox" id="suggestUserPromptCheckbox">
+          <span>Suggest user prompt</span>
         </label>
       </dialog>
 
