@@ -5,7 +5,9 @@
 
 import { GoogleGenAI } from './js-genai.js';
 
-localStorage.liveModel ??= 'gemini-2.5-flash-native-audio-preview-12-2025';
+if (!localStorage.liveModel || localStorage.liveModel.includes('2.5')) {
+  localStorage.liveModel = 'gemini-3.1-flash-live';
+}
 
 class AudioScheduler {
   constructor() {
@@ -183,6 +185,8 @@ let audioScheduler = null;
 let micCapture = null;
 let lastStartParams = null;
 let isReconnecting = false;
+let updateToolsTimeout = null;
+let lastToolsHash = null;
 
 export async function initGeminiLive(params) {
   params.micBtn.onclick = async () => {
@@ -200,9 +204,20 @@ export async function initGeminiLive(params) {
 }
 
 export async function updateLiveTools() {
-  if (liveSession && lastStartParams) {
+  if (!liveSession || !lastStartParams) return;
+
+  if (updateToolsTimeout) clearTimeout(updateToolsTimeout);
+  updateToolsTimeout = setTimeout(async () => {
+    const currentTools = lastStartParams.getTools?.() || [];
+    const currentHash = JSON.stringify(
+      currentTools.map((t) => [t.frameId, t.name, t.inputSchema]),
+    );
+    if (currentHash === lastToolsHash) return;
+    lastToolsHash = currentHash;
+
+    lastStartParams.logPrompt?.('Tools updated. Reconnecting Gemini Live session...');
     await startLive(lastStartParams);
-  }
+  }, 200);
 }
 
 async function startLive({
@@ -214,6 +229,9 @@ async function startLive({
   addToTrace,
 }) {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  lastToolsHash = JSON.stringify(
+    (getTools() || []).map((t) => [t.frameId, t.name, t.inputSchema]),
+  );
 
   if (!audioScheduler) {
     audioScheduler = new AudioScheduler();
@@ -258,6 +276,8 @@ async function startLive({
       config: {
         systemInstruction: { parts: [{ text: config.systemInstruction.join('\n') }] },
         responseModalities: ['AUDIO'],
+        thinkingConfig: { thinkingBudget: 0 },
+        contextWindowCompression: { slidingWindow: {} },
         proactivity: { proactiveAudio: true },
         inputAudioTranscription: {},
         outputAudioTranscription: {},
@@ -356,6 +376,11 @@ async function startLive({
 }
 
 function stopLive(micBtn) {
+  if (updateToolsTimeout) {
+    clearTimeout(updateToolsTimeout);
+    updateToolsTimeout = null;
+  }
+  lastToolsHash = null;
   lastStartParams = null;
   isReconnecting = false;
   if (liveSession) {
