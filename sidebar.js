@@ -47,13 +47,15 @@ let userPromptPendingId = 0;
 let lastSuggestedUserPrompt = '';
 
 // Listen for the results coming back from content.js
-chrome.runtime.onMessage.addListener(async ({ message, tools, url, type }, sender) => {
+chrome.runtime.onMessage.addListener(async ({ message, tools, url, type, tabId }, sender) => {
   // Internal signals (e.g. contentScriptReady) are handled elsewhere.
   if (type) return;
   if (sender.frameId && sender.frameId !== 0) return;
   if (!message && !tools) return;
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (sender.tab && sender.tab.id !== tab.id) return;
+  // Ignore errors about other tabs, e.g. the mic permission popup window.
+  if (tabId && tabId !== tab.id) return;
 
   tbody.innerHTML = '';
   thead.innerHTML = '';

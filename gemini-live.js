@@ -103,7 +103,7 @@ class MicCapture {
         );
 
         const url = chrome.runtime.getURL('mic-permission.html');
-        await chrome.windows.create({
+        const popup = await chrome.windows.create({
           url,
           type: 'popup',
           width: 350,
@@ -111,7 +111,25 @@ class MicCapture {
           focused: true,
           state: 'normal', // This is key to preventing full-screen inheritance on macOS
         });
-        throw new Error('Permission required');
+
+        // Wait for mic-permission.js to report the grant so this same click can
+        // start the session. Closing the popup first cancels.
+        await new Promise((resolve, reject) => {
+          const onMessage = (message) => {
+            if (message.type === 'mic-permission-granted') done(resolve);
+          };
+          const onRemoved = (windowId) => {
+            if (windowId !== popup.id) return;
+            done(() => reject(new Error('Microphone permission was not granted.')));
+          };
+          const done = (settle) => {
+            chrome.runtime.onMessage.removeListener(onMessage);
+            chrome.windows.onRemoved.removeListener(onRemoved);
+            settle();
+          };
+          chrome.runtime.onMessage.addListener(onMessage);
+          chrome.windows.onRemoved.addListener(onRemoved);
+        });
       }
 
       chrome.runtime.onMessage.addListener(this._onMessage);
@@ -140,10 +158,7 @@ class MicCapture {
       };
       await sendStart();
     } catch (err) {
-      console.error('MicCapture start failed:', err);
-      if (err.message !== 'Permission required') {
-        this.logPrompt(`⚠️ Mic Error: ${err.message}`);
-      }
+      this.logPrompt(`⚠️ Mic Error: ${err.message}`);
       throw err;
     }
   }
@@ -181,14 +196,6 @@ let updateToolsTimeout = null;
 let lastToolsHash = null;
 
 export async function initGeminiLive(params) {
-  chrome.runtime.onMessage.addListener((message) => {
-    if (message.type === 'mic-permission-granted') {
-      if (!liveSession && lastStartParams) {
-        startLive(lastStartParams);
-      }
-    }
-  });
-
   params.micBtn.onclick = async () => {
     if (!localStorage.apiKey) {
       params.apiKeyBtn.click();
@@ -246,9 +253,8 @@ async function startLive({
   if (!micBtn.classList.contains('active')) {
     try {
       await micCapture.start();
-    } catch (micErr) {
-      console.error('Initial mic start failed:', micErr);
-      return;
+    } catch {
+      return; // MicCapture already logged why.
     }
 
     micBtn.classList.add('active');
