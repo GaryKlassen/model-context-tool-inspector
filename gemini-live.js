@@ -194,6 +194,15 @@ let lastStartParams = null;
 let isReconnecting = false;
 let updateToolsTimeout = null;
 let lastToolsHash = null;
+let resumeHandle = null;
+let toolCallInProgress = false;
+let userRequest = '';
+let userRequestDone = true;
+let requestToolCalls = [];
+
+function toolsHash(tools) {
+  return JSON.stringify((tools || []).map((t) => [t.frameId, t.name, t.inputSchema]));
+}
 
 export async function initGeminiLive(params) {
   params.micBtn.onclick = async () => {
@@ -215,30 +224,21 @@ export async function updateLiveTools() {
 
   if (updateToolsTimeout) clearTimeout(updateToolsTimeout);
   updateToolsTimeout = setTimeout(async () => {
-    const currentTools = lastStartParams.getTools?.() || [];
-    const currentHash = JSON.stringify(
-      currentTools.map((t) => [t.frameId, t.name, t.inputSchema]),
-    );
-    if (currentHash === lastToolsHash) return;
-    lastToolsHash = currentHash;
+    // Tools changed by a tool call are picked up once it returns.
+    if (toolCallInProgress) return;
+    if (toolsHash(lastStartParams.getTools()) === lastToolsHash) return;
 
     lastStartParams.logPrompt?.('Tools updated. Reconnecting Gemini Live session...');
     await startLive(lastStartParams);
   }, 200);
 }
 
-async function startLive({
-  micBtn,
-  getTools,
-  getConfig,
-  executeTool,
-  logPrompt,
-  addToTrace,
-}) {
+async function startLive(
+  { micBtn, getTools, getConfig, executeTool, logPrompt, addToTrace },
+  resumeText = null,
+) {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  lastToolsHash = JSON.stringify(
-    (getTools() || []).map((t) => [t.frameId, t.name, t.inputSchema]),
-  );
+  lastToolsHash = toolsHash(getTools());
 
   if (!audioScheduler) {
     audioScheduler = new AudioScheduler();
@@ -288,6 +288,8 @@ async function startLive({
         inputAudioTranscription: {},
         speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Puck' } } },
         realtimeInputConfig: { activityHandling: 'START_OF_ACTIVITY_INTERRUPTS' },
+        // Keeps the conversation when reconnecting with new tools.
+        sessionResumption: { handle: resumeHandle ?? undefined },
         tools: config.tools,
       },
       callbacks: {
@@ -313,8 +315,17 @@ async function startLive({
         },
         onmessage: (message) => {
           addToTrace({ userPrompt: { message, config } });
+          const update = message.sessionResumptionUpdate;
+          if (update?.resumable && update.newHandle) resumeHandle = update.newHandle;
+          if (message.setupComplete && resumeText) {
+            const turns = [{ role: 'user', parts: [{ text: resumeText }] }];
+            addToTrace({ userPrompt: { message: turns, config } });
+            liveSession?.sendClientContent({ turns, turnComplete: true });
+            resumeText = null;
+          }
           if (message.toolCall?.functionCalls) {
             const fcs = message.toolCall.functionCalls;
+            toolCallInProgress = true;
             (async () => {
               const responses = [];
               for (const fc of fcs) {
@@ -322,36 +333,39 @@ async function startLive({
                 frameId = parseInt(frameId);
                 const inputArgs = JSON.stringify(fc.args);
                 logPrompt(`AI calling tool "${toolName}" with ${inputArgs}`);
+                let response;
                 try {
                   const result = await executeTool(tab.id, toolName, inputArgs, frameId);
-                  responses.push({
-                    id: fc.id,
-                    name: fc.name,
-                    response: { result: result === undefined ? null : result },
-                  });
-                  liveSession?.sendToolResponse({
-                    functionResponses: [{
-                      id: fc.id,
-                      name: fc.name,
-                      response: { result: result === undefined ? null : result },
-                    }],
-                  });
+                  response = { result: result === undefined ? null : result };
                   logPrompt(`Tool "${toolName}" result: ${result}`);
                 } catch (e) {
-                  responses.push({ id: fc.id, name: fc.name, response: { error: e.message } });
-                  liveSession?.sendToolResponse({
-                    functionResponses: [{
-                      id: fc.id,
-                      name: fc.name,
-                      response: { error: e.message },
-                    }],
-                  });
+                  response = { error: e.message };
                   logPrompt(`⚠️ Error executing tool "${toolName}": ${e.message}`);
                 }
+                responses.push({ id: fc.id, name: fc.name, response });
+                requestToolCalls.push(`${toolName}(${inputArgs}) returned ${JSON.stringify(response)}`);
               }
-              if (responses.length > 0) {
-                addToTrace({ userPrompt: { message: responses, config } });
+              toolCallInProgress = false;
+              if (!lastStartParams) return; // Stopped while the tool ran.
+              addToTrace({ userPrompt: { message: responses, config } });
+
+              // Like text mode, pull tools after each tool call. Live tools can
+              // only be set on connect, so if the page's tools changed (e.g.
+              // after a navigation), resume the conversation with the new tools.
+              if (toolsHash(getTools()) === lastToolsHash) {
+                liveSession?.sendToolResponse({ functionResponses: responses });
+                return;
               }
+              logPrompt('Tools updated. Reconnecting Gemini Live session...');
+              await startLive(
+                lastStartParams,
+                [
+                  userRequest && `The user asked: "${userRequest.trim()}"`,
+                  `Tool calls made so far: ${requestToolCalls.join('; ')}.`,
+                  'The page changed, so your tools now match the new page.',
+                  'Continue with the request if anything is left to do.',
+                ].filter(Boolean).join('\n'),
+              );
             })();
           }
 
@@ -366,8 +380,16 @@ async function startLive({
             }
           }
           if (message.serverContent?.inputTranscription?.text) {
-            logPrompt(`User prompt: "${message.serverContent.inputTranscription.text}"`);
+            const { text } = message.serverContent.inputTranscription;
+            if (userRequestDone) {
+              userRequest = '';
+              requestToolCalls = [];
+            }
+            userRequestDone = false;
+            userRequest += text;
+            logPrompt(`User prompt: "${text}"`);
           }
+          if (message.serverContent?.turnComplete) userRequestDone = true;
           if (message.serverContent?.interrupted) {
             audioScheduler.clear();
           }
@@ -388,6 +410,11 @@ function stopLive(micBtn) {
   lastToolsHash = null;
   lastStartParams = null;
   isReconnecting = false;
+  resumeHandle = null;
+  toolCallInProgress = false;
+  userRequest = '';
+  userRequestDone = true;
+  requestToolCalls = [];
   if (liveSession) {
     const sessionToClose = liveSession;
     liveSession = null;

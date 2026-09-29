@@ -67,6 +67,7 @@ chrome.runtime.onMessage.addListener(async ({ message, tools, url, type, tabId }
   const haveNewTools = JSON.stringify(currentTools) !== JSON.stringify(tools);
 
   currentTools = tools;
+  if (haveNewTools) updateLiveTools();
 
   if (!tools || tools.length === 0) {
     const row = document.createElement('tr');
@@ -117,10 +118,7 @@ chrome.runtime.onMessage.addListener(async ({ message, tools, url, type, tabId }
   });
   updateDefaultValueForInputArgs();
 
-  if (haveNewTools) {
-    suggestUserPrompt();
-    updateLiveTools();
-  }
+  if (haveNewTools) suggestUserPrompt();
 });
 
 tbody.ondblclick = () => {
@@ -437,7 +435,7 @@ function getConfig() {
     'CRITICAL RULE: Do not try to use other tools than the available ones.',
   ];
 
-  const functionDeclarations = currentTools.map((tool) => {
+  const functionDeclarations = (currentTools || []).map((tool) => {
     return {
       name: `_${tool.frameId}_${tool.name}`,
       description: tool.description,
