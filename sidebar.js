@@ -435,7 +435,7 @@ function getConfig() {
     'CRITICAL RULE: Do not try to use other tools than the available ones.',
   ];
 
-  const functionDeclarations = (currentTools || []).map((tool) => {
+  const functionDeclarations = currentTools.map((tool) => {
     return {
       name: `_${tool.frameId}_${tool.name}`,
       description: tool.description,
